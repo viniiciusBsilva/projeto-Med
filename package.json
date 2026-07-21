@@ -1,0 +1,14 @@
+{
+  "name": "postcarepro",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PostCare Pro — monorepo (painel Next.js, app Flutter, backend Supabase)",
+  "packageManager": "pnpm@10.33.3",
+  "scripts": {
+    "panel:dev": "pnpm --filter panel dev",
+    "panel:build": "pnpm --filter panel build",
+    "panel:start": "pnpm --filter panel start",
+    "panel:lint": "pnpm --filter panel lint",
+    "panel:typecheck": "pnpm --filter panel typecheck"
+  }
+}
