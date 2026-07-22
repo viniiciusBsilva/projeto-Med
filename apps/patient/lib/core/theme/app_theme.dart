@@ -50,7 +50,7 @@ class AppTheme {
             ? ThemeData.dark().textTheme
             : ThemeData.light().textTheme,
       ),
-      cardTheme: CardTheme(
+      cardTheme: CardThemeData(
         color: surface,
         elevation: 0,
         shape: RoundedRectangleBorder(

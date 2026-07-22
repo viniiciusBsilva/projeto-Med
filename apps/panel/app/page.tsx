@@ -3,7 +3,8 @@
 import * as React from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Activity, Mail, Lock, Eye, EyeOff, ArrowRight, Shield, HeartPulse, Clock, AlertCircle } from 'lucide-react';
+import { useTheme } from 'next-themes';
+import { Activity, Mail, Lock, Eye, EyeOff, ArrowRight, Shield, HeartPulse, Clock, AlertCircle, Sun, Moon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -13,17 +14,19 @@ import { createClient } from '@/lib/supabase/client';
 export default function LoginPage() {
   const router = useRouter();
   const supabase = React.useMemo(() => createClient(), []);
+  const { theme, setTheme } = useTheme();
+  const [mounted, setMounted] = React.useState(false);
   const [showPassword, setShowPassword] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
   const [email, setEmail] = React.useState('');
   const [password, setPassword] = React.useState('');
   const [error, setError] = React.useState<string | null>(null);
-  const [info, setInfo] = React.useState<string | null>(null);
+
+  React.useEffect(() => setMounted(true), []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    setInfo(null);
     setLoading(true);
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) {
@@ -39,45 +42,26 @@ export default function LoginPage() {
     router.refresh();
   };
 
-  const handleSignUp = async () => {
-    setError(null);
-    setInfo(null);
-    if (!email || !password) {
-      setError('Informe e-mail e senha para criar a conta.');
-      return;
-    }
-    if (password.length < 8) {
-      setError('A senha deve ter ao menos 8 caracteres.');
-      return;
-    }
-    setLoading(true);
-    // Cria a conta (já confirmada) via Edge Function e entra em seguida.
-    const { data, error } = await supabase.functions.invoke('signup', {
-      body: { email: email.trim().toLowerCase(), password },
-    });
-    const bodyError = (data as { error?: string } | null)?.error;
-    if (error || bodyError) {
-      setError(bodyError ?? 'Não foi possível criar a conta.');
-      setLoading(false);
-      return;
-    }
-    const { error: signInError } = await supabase.auth.signInWithPassword({
-      email: email.trim().toLowerCase(),
-      password,
-    });
-    if (signInError) {
-      setInfo('Conta criada! Faça login para entrar.');
-      setLoading(false);
-      return;
-    }
-    router.replace('/dashboard');
-    router.refresh();
-  };
-
   return (
     <div className="flex min-h-screen">
       {/* Left side - Form */}
-      <div className="flex w-full flex-col justify-center px-6 py-12 sm:px-12 lg:w-1/2 lg:px-20 xl:px-24">
+      <div className="relative flex w-full flex-col justify-center px-6 py-12 sm:px-12 lg:w-1/2 lg:px-20 xl:px-24">
+        {mounted && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            aria-label="Alternar tema"
+            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            className="absolute right-4 top-4 h-9 w-9"
+          >
+            {theme === 'dark' ? (
+              <Sun className="h-4 w-4" style={{ width: 18, height: 18 }} />
+            ) : (
+              <Moon className="h-4 w-4" style={{ width: 18, height: 18 }} />
+            )}
+          </Button>
+        )}
         <div className="mx-auto w-full max-w-sm">
           <div className="mb-8 flex items-center gap-2.5">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary">
@@ -163,12 +147,6 @@ export default function LoginPage() {
                 <span>{error}</span>
               </div>
             )}
-            {info && (
-              <div className="rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-sm text-primary">
-                {info}
-              </div>
-            )}
-
             <Button type="submit" className="w-full" size="lg" disabled={loading}>
               {loading ? (
                 <span className="flex items-center gap-2">
@@ -183,27 +161,6 @@ export default function LoginPage() {
               )}
             </Button>
           </form>
-
-          <div className="my-6 flex items-center gap-3">
-            <div className="h-px flex-1 bg-border" />
-            <span className="text-xs text-muted-foreground">ou</span>
-            <div className="h-px flex-1 bg-border" />
-          </div>
-
-          <Button
-            type="button"
-            variant="outline"
-            className="w-full"
-            size="lg"
-            disabled={loading}
-            onClick={handleSignUp}
-          >
-            Criar conta
-          </Button>
-
-          <p className="mt-8 text-center text-xs text-muted-foreground">
-            Ao continuar, você concorda com os Termos de Serviço e a Política de Privacidade.
-          </p>
         </div>
       </div>
 

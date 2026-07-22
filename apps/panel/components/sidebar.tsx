@@ -6,6 +6,7 @@ import { usePathname } from 'next/navigation';
 import {
   LayoutDashboard,
   Users,
+  UserRound,
   Calendar,
   MessageSquare,
   Bell,
@@ -21,6 +22,7 @@ import { Button } from '@/components/ui/button';
 const navItems = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/patients', label: 'Pacientes', icon: Users },
+  { href: '/doctors', label: 'Médicos', icon: UserRound },
   { href: '/surgeries', label: 'Cirurgias', icon: Stethoscope },
   { href: '/calendar', label: 'Agenda', icon: Calendar },
   { href: '/messages', label: 'Mensagens', icon: MessageSquare, badge: 3 },
@@ -104,21 +106,6 @@ export function Sidebar({ open, onClose }: SidebarProps) {
             );
           })}
         </nav>
-
-        <div className="border-t p-4">
-          <div className="rounded-xl bg-gradient-to-br from-primary/10 to-secondary/10 p-4">
-            <p className="text-sm font-semibold">Plano Premium</p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              70 / 100 pacientes ativos
-            </p>
-            <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted">
-              <div className="h-full rounded-full bg-primary" style={{ width: '70%' }} />
-            </div>
-            <Button size="sm" variant="outline" className="mt-3 w-full">
-              Gerenciar assinatura
-            </Button>
-          </div>
-        </div>
       </aside>
     </>
   );

@@ -6,14 +6,10 @@ import {
   Users,
   Shield,
   Stethoscope,
-  Plug,
-  CreditCard,
   User,
   Upload,
   Plus,
   MoreVertical,
-  Check,
-  Crown,
 } from 'lucide-react';
 import { PageHeader } from '@/components/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -21,11 +17,40 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import type { User as UserType, ClinicInfo } from '@/lib/types';
-import { getTeam, getClinicInfo } from '@/lib/queries';
+import {
+  getTeam,
+  getClinicInfo,
+  createTeamMember,
+  getCurrentProfile,
+  updateTeamMember,
+  setTeamMemberActive,
+} from '@/lib/queries';
+
+const PERMISSIONS = ['Administrador', 'Secretária'];
 
 const rolePermissions: Record<string, { label: string; permissions: { label: string; enabled: boolean }[] }> = {
   Administrador: {
@@ -36,29 +61,6 @@ const rolePermissions: Record<string, { label: string; permissions: { label: str
       { label: 'Visualizar pacientes', enabled: true },
       { label: 'Editar pacientes', enabled: true },
       { label: 'Gerar relatórios', enabled: true },
-      { label: 'Gerenciar assinatura', enabled: true },
-    ],
-  },
-  Médico: {
-    label: 'Médico',
-    permissions: [
-      { label: 'Gerenciar usuários', enabled: false },
-      { label: 'Gerenciar protocolos', enabled: true },
-      { label: 'Visualizar pacientes', enabled: true },
-      { label: 'Editar pacientes', enabled: true },
-      { label: 'Gerar relatórios', enabled: true },
-      { label: 'Gerenciar assinatura', enabled: false },
-    ],
-  },
-  Enfermeiro: {
-    label: 'Enfermeiro',
-    permissions: [
-      { label: 'Gerenciar usuários', enabled: false },
-      { label: 'Gerenciar protocolos', enabled: false },
-      { label: 'Visualizar pacientes', enabled: true },
-      { label: 'Editar pacientes', enabled: true },
-      { label: 'Gerar relatórios', enabled: false },
-      { label: 'Gerenciar assinatura', enabled: false },
     ],
   },
   Secretária: {
@@ -69,37 +71,130 @@ const rolePermissions: Record<string, { label: string; permissions: { label: str
       { label: 'Visualizar pacientes', enabled: true },
       { label: 'Editar pacientes', enabled: true },
       { label: 'Gerar relatórios', enabled: false },
-      { label: 'Gerenciar assinatura', enabled: false },
     ],
   },
 };
-
-const integrations = [
-  { name: 'WhatsApp Business', description: 'Envio automático de mensagens', connected: true, icon: '💬' },
-  { name: 'Google Calendar', description: 'Sincronização de agenda', connected: true, icon: '📅' },
-  { name: 'Telegram', description: 'Notificações alternativas', connected: false, icon: '✈️' },
-  { name: 'Zapier', description: 'Automação de fluxos', connected: false, icon: '⚡' },
-];
 
 export default function SettingsPage() {
   const [team, setTeam] = React.useState<UserType[]>([]);
   const [clinic, setClinic] = React.useState<ClinicInfo | null>(null);
 
-  React.useEffect(() => {
+  // Modal "Novo usuário"
+  const [open, setOpen] = React.useState(false);
+  const [nuName, setNuName] = React.useState('');
+  const [nuEmail, setNuEmail] = React.useState('');
+  const [nuPermission, setNuPermission] = React.useState('');
+  const [nuSubmitting, setNuSubmitting] = React.useState(false);
+  const [nuError, setNuError] = React.useState<string | null>(null);
+  const [nuResult, setNuResult] = React.useState<{ emailed: boolean; tempPassword?: string } | null>(null);
+
+  // Usuário logado (para regras de gerência)
+  const [me, setMe] = React.useState<{ id: string; isAdmin: boolean } | null>(null);
+
+  // Modal de edição
+  const [editOpen, setEditOpen] = React.useState(false);
+  const [editUser, setEditUser] = React.useState<UserType | null>(null);
+  const [editName, setEditName] = React.useState('');
+  const [editPermission, setEditPermission] = React.useState('');
+  const [editSubmitting, setEditSubmitting] = React.useState(false);
+  const [editError, setEditError] = React.useState<string | null>(null);
+
+  const refreshTeam = React.useCallback(() => {
     getTeam().then(setTeam).catch(() => {});
-    getClinicInfo().then(setClinic).catch(() => {});
   }, []);
 
-  const usagePct = clinic && clinic.activePatientLimit > 0
-    ? Math.min(100, Math.round((clinic.activePatients / clinic.activePatientLimit) * 100))
-    : 0;
+  React.useEffect(() => {
+    refreshTeam();
+    getClinicInfo().then(setClinic).catch(() => {});
+    getCurrentProfile().then((p) => p && setMe({ id: p.id, isAdmin: p.isAdmin })).catch(() => {});
+  }, [refreshTeam]);
+
+  const openEdit = (user: UserType) => {
+    setEditUser(user);
+    setEditName(user.name === '—' ? '' : user.name);
+    setEditPermission(PERMISSIONS.includes(user.role) ? user.role : '');
+    setEditError(null);
+    setEditOpen(true);
+  };
+
+  const handleEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editUser) return;
+    setEditError(null);
+    if (!editName.trim()) {
+      setEditError('Informe o nome.');
+      return;
+    }
+    setEditSubmitting(true);
+    try {
+      const isSelf = me?.id === editUser.id;
+      await updateTeamMember({
+        userId: editUser.id,
+        name: editName.trim(),
+        permission: isSelf ? undefined : editPermission,
+      });
+      refreshTeam();
+      setEditOpen(false);
+    } catch (err) {
+      setEditError(err instanceof Error ? err.message : 'Erro ao salvar.');
+    } finally {
+      setEditSubmitting(false);
+    }
+  };
+
+  const handleToggleActive = async (user: UserType) => {
+    try {
+      await setTeamMemberActive(user.id, !user.active);
+      refreshTeam();
+    } catch {
+      /* silencioso: a lista não muda se falhar */
+    }
+  };
+
+  const resetModal = () => {
+    setNuName('');
+    setNuEmail('');
+    setNuPermission('');
+    setNuError(null);
+    setNuResult(null);
+    setNuSubmitting(false);
+  };
+
+  const handleCreateUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setNuError(null);
+    if (!nuName.trim() || !nuEmail.trim()) {
+      setNuError('Informe nome e e-mail.');
+      return;
+    }
+    setNuSubmitting(true);
+    try {
+      const res = await createTeamMember({
+        name: nuName.trim(),
+        email: nuEmail.trim().toLowerCase(),
+        permission: nuPermission,
+      });
+      refreshTeam();
+      if (res.emailed) {
+        setOpen(false);
+        resetModal();
+      } else {
+        // Brevo não configurado: mostra a senha para repasse manual.
+        setNuResult(res);
+      }
+    } catch (err) {
+      setNuError(err instanceof Error ? err.message : 'Erro ao criar usuário.');
+    } finally {
+      setNuSubmitting(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
       <PageHeader title="Configurações" description="Gerencie sua clínica, usuários e preferências" />
 
       <Tabs defaultValue="clinic">
-        <TabsList className="grid w-full grid-cols-2 md:w-auto md:grid-cols-6">
+        <TabsList className="grid w-full grid-cols-2 md:w-auto md:grid-cols-4">
           <TabsTrigger value="clinic" className="gap-1.5">
             <Building2 className="h-3.5 w-3.5" style={{ width: 14, height: 14 }} />
             <span className="hidden sm:inline">Clínica</span>
@@ -115,14 +210,6 @@ export default function SettingsPage() {
           <TabsTrigger value="protocols" className="gap-1.5">
             <Stethoscope className="h-3.5 w-3.5" style={{ width: 14, height: 14 }} />
             <span className="hidden sm:inline">Protocolos</span>
-          </TabsTrigger>
-          <TabsTrigger value="integrations" className="gap-1.5">
-            <Plug className="h-3.5 w-3.5" style={{ width: 14, height: 14 }} />
-            <span className="hidden sm:inline">Integrações</span>
-          </TabsTrigger>
-          <TabsTrigger value="plan" className="gap-1.5">
-            <CreditCard className="h-3.5 w-3.5" style={{ width: 14, height: 14 }} />
-            <span className="hidden sm:inline">Plano</span>
           </TabsTrigger>
         </TabsList>
 
@@ -179,10 +266,106 @@ export default function SettingsPage() {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
               <CardTitle className="text-base font-semibold">Usuários do sistema</CardTitle>
-              <Button size="sm">
-                <Plus className="mr-1.5 h-4 w-4" />
-                Novo usuário
-              </Button>
+              <Dialog
+                open={open}
+                onOpenChange={(o) => {
+                  setOpen(o);
+                  if (!o) resetModal();
+                }}
+              >
+                <DialogTrigger asChild>
+                  <Button size="sm">
+                    <Plus className="mr-1.5 h-4 w-4" />
+                    Novo usuário
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="max-w-md">
+                  <DialogHeader>
+                    <DialogTitle>Novo usuário</DialogTitle>
+                  </DialogHeader>
+
+                  {nuResult && !nuResult.emailed ? (
+                    <div className="space-y-4 py-2">
+                      <p className="text-sm text-muted-foreground">
+                        Usuário criado. O envio de e-mail não está configurado — copie a senha
+                        temporária e repasse ao usuário. Ele deve trocá-la no primeiro acesso.
+                      </p>
+                      <div className="rounded-lg border bg-muted/40 p-3">
+                        <p className="text-xs text-muted-foreground">Senha temporária</p>
+                        <p className="mt-1 select-all font-mono text-lg font-semibold">
+                          {nuResult.tempPassword}
+                        </p>
+                      </div>
+                      <div className="flex justify-end">
+                        <Button
+                          onClick={() => {
+                            setOpen(false);
+                            resetModal();
+                          }}
+                        >
+                          Concluir
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <form onSubmit={handleCreateUser} className="space-y-4 py-2">
+                      <div className="space-y-2">
+                        <Label htmlFor="nu-name">Nome completo</Label>
+                        <Input
+                          id="nu-name"
+                          placeholder="Nome do usuário"
+                          value={nuName}
+                          onChange={(e) => setNuName(e.target.value)}
+                          required
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="nu-email">E-mail</Label>
+                        <Input
+                          id="nu-email"
+                          type="email"
+                          placeholder="usuario@email.com"
+                          value={nuEmail}
+                          onChange={(e) => setNuEmail(e.target.value)}
+                          required
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="nu-permission">Permissão</Label>
+                        <Select value={nuPermission} onValueChange={setNuPermission}>
+                          <SelectTrigger id="nu-permission">
+                            <SelectValue placeholder="Selecione a permissão" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {PERMISSIONS.map((p) => (
+                              <SelectItem key={p} value={p}>
+                                {p}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      {nuError && <p className="text-sm text-destructive">{nuError}</p>}
+                      <div className="flex justify-end gap-2 pt-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => {
+                            setOpen(false);
+                            resetModal();
+                          }}
+                          disabled={nuSubmitting}
+                        >
+                          Cancelar
+                        </Button>
+                        <Button type="submit" disabled={nuSubmitting}>
+                          {nuSubmitting ? 'Criando...' : 'Criar usuário'}
+                        </Button>
+                      </div>
+                    </form>
+                  )}
+                </DialogContent>
+              </Dialog>
             </CardHeader>
             <CardContent className="p-0">
               <div className="divide-y">
@@ -206,14 +389,86 @@ export default function SettingsPage() {
                       </div>
                       <p className="truncate text-xs text-muted-foreground">Membro desde {user.lastAccess}</p>
                     </div>
-                    <Button variant="ghost" size="icon" className="h-8 w-8">
-                      <MoreVertical className="h-4 w-4" style={{ width: 16, height: 16 }} />
-                    </Button>
+                    {me?.isAdmin && (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon" className="h-8 w-8">
+                            <MoreVertical className="h-4 w-4" style={{ width: 16, height: 16 }} />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-44">
+                          <DropdownMenuItem onSelect={() => openEdit(user)}>
+                            Editar
+                          </DropdownMenuItem>
+                          {me.id !== user.id && (
+                            <DropdownMenuItem
+                              className={user.active ? 'text-destructive' : ''}
+                              onSelect={() => handleToggleActive(user)}
+                            >
+                              {user.active ? 'Inativar' : 'Ativar'}
+                            </DropdownMenuItem>
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    )}
                   </div>
                 ))}
               </div>
             </CardContent>
           </Card>
+
+          {/* Editar usuário */}
+          <Dialog open={editOpen} onOpenChange={setEditOpen}>
+            <DialogContent className="max-w-md">
+              <DialogHeader>
+                <DialogTitle>Editar usuário</DialogTitle>
+              </DialogHeader>
+              <form onSubmit={handleEdit} className="space-y-4 py-2">
+                <div className="space-y-2">
+                  <Label htmlFor="ed-name">Nome completo</Label>
+                  <Input
+                    id="ed-name"
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    required
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="ed-permission">Permissão</Label>
+                  <Select
+                    value={editPermission}
+                    onValueChange={setEditPermission}
+                    disabled={me?.id === editUser?.id}
+                  >
+                    <SelectTrigger id="ed-permission">
+                      <SelectValue placeholder="Selecione a permissão" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {PERMISSIONS.map((p) => (
+                        <SelectItem key={p} value={p}>
+                          {p}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {me?.id === editUser?.id && (
+                    <p className="text-xs text-muted-foreground">
+                      Você não pode alterar a própria permissão.
+                    </p>
+                  )}
+                </div>
+                {editError && <p className="text-sm text-destructive">{editError}</p>}
+                <div className="flex justify-end gap-2 pt-2">
+                  <Button type="button" variant="outline" onClick={() => setEditOpen(false)} disabled={editSubmitting}>
+                    Cancelar
+                  </Button>
+                  <Button type="submit" disabled={editSubmitting}>
+                    {editSubmitting ? 'Salvando...' : 'Salvar'}
+                  </Button>
+                </div>
+              </form>
+            </DialogContent>
+          </Dialog>
         </TabsContent>
 
         {/* Permissions */}
@@ -279,128 +534,6 @@ export default function SettingsPage() {
           </Card>
         </TabsContent>
 
-        {/* Integrations */}
-        <TabsContent value="integrations" className="mt-4">
-          <div className="grid gap-4 md:grid-cols-2">
-            {integrations.map((integration) => (
-              <Card key={integration.name}>
-                <CardContent className="p-5">
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-muted text-2xl">
-                        {integration.icon}
-                      </div>
-                      <div>
-                        <p className="text-sm font-semibold">{integration.name}</p>
-                        <p className="text-xs text-muted-foreground">{integration.description}</p>
-                      </div>
-                    </div>
-                    {integration.connected && (
-                      <Badge className="gap-1 bg-success/10 text-success">
-                        <Check className="h-3 w-3" style={{ width: 12, height: 12 }} />
-                        Conectado
-                      </Badge>
-                    )}
-                  </div>
-                  <Button
-                    variant={integration.connected ? 'outline' : 'default'}
-                    size="sm"
-                    className="mt-4 w-full"
-                  >
-                    {integration.connected ? 'Desconectar' : 'Conectar'}
-                  </Button>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        </TabsContent>
-
-        {/* Plan */}
-        <TabsContent value="plan" className="mt-4">
-          <div className="space-y-6">
-            <Card className="overflow-hidden border-primary/30">
-              <div className="bg-gradient-to-br from-primary/10 to-secondary/10 p-6">
-                <div className="flex items-center gap-2">
-                  <Crown className="h-5 w-5 text-primary" style={{ width: 20, height: 20 }} />
-                  <span className="text-sm font-semibold text-primary capitalize">Plano {clinic?.plan ?? '—'}</span>
-                </div>
-                <p className="mt-2 text-3xl font-bold">R$ 497<span className="text-lg font-normal text-muted-foreground">/mês</span></p>
-                <p className="mt-1 text-sm text-muted-foreground">Assinatura mensal por limite de pacientes ativos</p>
-              </div>
-              <CardContent className="p-6">
-                <div className="mb-4">
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-muted-foreground">Pacientes ativos</span>
-                    <span className="font-medium">{clinic?.activePatients ?? 0} / {clinic?.activePatientLimit ?? 0}</span>
-                  </div>
-                  <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-muted">
-                    <div className="h-full rounded-full bg-primary" style={{ width: `${usagePct}%` }} />
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  {[
-                    'Até 100 pacientes ativos',
-                    'Protocolos ilimitados',
-                    'IA de análise de evolução',
-                    'Mensagens automáticas',
-                    'Exportação PDF e Excel',
-                    'Suporte prioritário',
-                  ].map((feature, i) => (
-                    <div key={i} className="flex items-center gap-2 text-sm">
-                      <Check className="h-4 w-4 text-success" style={{ width: 16, height: 16 }} />
-                      {feature}
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-6 flex gap-2">
-                  <Button className="flex-1">Fazer upgrade</Button>
-                  <Button variant="outline">Gerenciar assinatura</Button>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader className="pb-4">
-                <CardTitle className="text-base font-semibold">Perfil</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="flex items-center gap-4">
-                  <Avatar className="h-16 w-16 border-2">
-                    <AvatarImage src="https://images.pexels.com/photos/6234600/pexels-photo-6234600.jpeg?auto=compress&cs=tinysrgb&w=100" />
-                    <AvatarFallback>RM</AvatarFallback>
-                  </Avatar>
-                  <div>
-                    <Button variant="outline" size="sm">
-                      <Upload className="mr-1.5 h-4 w-4" />
-                      Alterar foto
-                    </Button>
-                  </div>
-                </div>
-                <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
-                  <div className="space-y-2">
-                    <Label htmlFor="profile-name">Nome</Label>
-                    <Input id="profile-name" defaultValue="Dr. Rafael Mendes" />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="profile-specialty">Especialidade</Label>
-                    <Input id="profile-specialty" defaultValue="Cirurgia Plástica" />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="profile-email">Email</Label>
-                    <Input id="profile-email" type="email" defaultValue="rafael@clinicavitalis.com.br" />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="profile-phone">Telefone</Label>
-                    <Input id="profile-phone" defaultValue="(11) 98765-4321" />
-                  </div>
-                </div>
-                <div className="mt-4 flex justify-end">
-                  <Button>Salvar perfil</Button>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        </TabsContent>
       </Tabs>
     </div>
   );

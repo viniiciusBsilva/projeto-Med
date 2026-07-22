@@ -2,6 +2,9 @@
 
 > Convenções de engenharia. Leia junto com `PRD.md` e `DESIGN_SYSTEM.md`.
 > Este arquivo também serve de guia para o Claude Code (ver §10).
+>
+> **Vertical de foco atual: transplante capilar (FUE).** Protocolos, sinais de check-in e
+> dados de exemplo seguem esse contexto; o schema/engine permanece **genérico (multi-especialidade)**.
 
 ---
 

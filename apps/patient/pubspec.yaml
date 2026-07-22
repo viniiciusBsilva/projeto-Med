@@ -1,5 +1,5 @@
 name: postcarepro_patient
-description: PostCare Pro — app do paciente (acompanhamento pós-operatório).
+description: PostCare Pro — app do paciente (transplante capilar).
 publish_to: "none"
 version: 0.1.0+1
 
@@ -12,6 +12,14 @@ dependencies:
   cupertino_icons: ^1.0.6
   supabase_flutter: ^2.5.0
   google_fonts: ^6.2.1
+  image_picker: ^1.1.2
+  file_picker: ^8.1.2
+  url_launcher: ^6.3.0
+  shared_preferences: ^2.2.3
+  intl: ^0.19.0
+  # Push (opcional em runtime — o app roda sem Firebase configurado):
+  firebase_core: ^3.3.0
+  firebase_messaging: ^15.0.4
 
 dev_dependencies:
   flutter_test:

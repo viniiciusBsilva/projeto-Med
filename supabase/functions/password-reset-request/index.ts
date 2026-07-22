@@ -1,7 +1,7 @@
 // Edge Function: solicita reset de senha por código (OTP).
-// Gera um código de 6 dígitos, grava o hash em password_reset_codes e envia por e-mail (Brevo).
+// Gera um código de 6 dígitos, grava o hash em password_reset_codes e envia por e-mail (Resend).
 // verify_jwt=false (usuário deslogado chama). Respostas sempre genéricas (não enumera e-mails).
-// Secrets: BREVO_API_KEY, BREVO_SENDER_EMAIL, BREVO_SENDER_NAME?, RESET_CODE_PEPPER?
+// Secrets: RESEND_API_KEY, RESEND_SENDER_EMAIL?, RESEND_SENDER_NAME?, RESET_CODE_PEPPER?
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
@@ -76,11 +76,11 @@ Deno.serve(async (req: Request) => {
   });
   if (insErr) return json({ error: 'Não foi possível iniciar a recuperação.' }, 500);
 
-  // Envia o e-mail via Brevo.
-  const apiKey = Deno.env.get('BREVO_API_KEY');
-  const senderEmail = Deno.env.get('BREVO_SENDER_EMAIL');
-  const senderName = Deno.env.get('BREVO_SENDER_NAME') ?? 'PostCare Pro';
-  if (apiKey && senderEmail) {
+  // Envia o e-mail via Resend.
+  const apiKey = Deno.env.get('RESEND_API_KEY');
+  const senderEmail = Deno.env.get('RESEND_SENDER_EMAIL') ?? 'onboarding@resend.dev';
+  const senderName = Deno.env.get('RESEND_SENDER_NAME') ?? 'PostCare Pro';
+  if (apiKey) {
     const html = `
       <div style="font-family:Inter,system-ui,sans-serif;max-width:480px;margin:0 auto;color:#0F172A">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:24px">
@@ -94,14 +94,14 @@ Deno.serve(async (req: Request) => {
         </div>
         <p style="color:#94A3B8;font-size:13px;line-height:1.6">Se você não solicitou a recuperação, ignore este e-mail — sua senha continua a mesma.</p>
       </div>`;
-    await fetch('https://api.brevo.com/v3/smtp/email', {
+    await fetch('https://api.resend.com/emails', {
       method: 'POST',
-      headers: { 'api-key': apiKey, 'content-type': 'application/json', accept: 'application/json' },
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        sender: { email: senderEmail, name: senderName },
-        to: [{ email }],
+        from: `${senderName} <${senderEmail}>`,
+        to: [email],
         subject: 'Seu código de recuperação — PostCare Pro',
-        htmlContent: html,
+        html,
       }),
     }).catch(() => {});
   }

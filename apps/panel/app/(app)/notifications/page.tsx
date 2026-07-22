@@ -10,7 +10,8 @@ import {
   MessageSquare,
   Bell,
   CheckCheck,
-  Filter,
+  Droplet,
+  Sparkles,
 } from 'lucide-react';
 import { PageHeader } from '@/components/page-header';
 import { Card, CardContent } from '@/components/ui/card';
@@ -19,14 +20,21 @@ import type { Notification } from '@/lib/types';
 import { getNotifications, markNotificationRead } from '@/lib/queries';
 import { cn } from '@/lib/utils';
 
-const typeConfig: Record<Notification['type'], { icon: React.ElementType; color: string; bg: string }> = {
+type TypeStyle = { icon: React.ElementType; color: string; bg: string };
+
+const typeConfig: Record<string, TypeStyle> = {
   pain: { icon: AlertTriangle, color: 'text-destructive', bg: 'bg-destructive/10' },
   fever: { icon: Thermometer, color: 'text-destructive', bg: 'bg-destructive/10' },
+  bleeding: { icon: Droplet, color: 'text-destructive', bg: 'bg-destructive/10' },
+  redness: { icon: AlertTriangle, color: 'text-destructive', bg: 'bg-destructive/10' },
+  itching: { icon: Sparkles, color: 'text-warning', bg: 'bg-warning/10' },
   'no-response': { icon: Clock, color: 'text-warning', bg: 'bg-warning/10' },
   photo: { icon: Camera, color: 'text-primary', bg: 'bg-primary/10' },
   protocol: { icon: CheckCircle2, color: 'text-success', bg: 'bg-success/10' },
   message: { icon: MessageSquare, color: 'text-secondary', bg: 'bg-secondary/10' },
 };
+
+const defaultTypeStyle: TypeStyle = { icon: Bell, color: 'text-muted-foreground', bg: 'bg-muted' };
 
 const severityConfig: Record<Notification['severity'], { label: string; className: string }> = {
   info: { label: 'Info', className: 'bg-primary/10 text-primary' },
@@ -104,7 +112,7 @@ export default function NotificationsPage() {
           ) : (
             <div className="divide-y">
               {filtered.map((notification, i) => {
-                const config = typeConfig[notification.type];
+                const config = typeConfig[notification.type] ?? defaultTypeStyle;
                 const sevConfig = severityConfig[notification.severity];
                 return (
                   <div

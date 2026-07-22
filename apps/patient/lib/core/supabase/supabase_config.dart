@@ -14,6 +14,7 @@ class SupabaseConfig {
       // Sem config ainda: o app sobe mostrando o placeholder. Amarração real vem na fase 1.
       return;
     }
+    // ignore: deprecated_member_use — _anonKey é a chave pública (legacy anon) do projeto.
     await Supabase.initialize(url: _url, anonKey: _anonKey);
   }
 

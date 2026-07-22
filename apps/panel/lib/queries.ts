@@ -14,6 +14,7 @@ import type {
   DashboardMetrics,
   PatientStatus,
   RiskLevel,
+  Doctor,
 } from '@/lib/types';
 
 // ---------- helpers ----------
@@ -94,7 +95,7 @@ export async function getPatientTimeline(patientId: string): Promise<TimelineSte
   const supabase = createClient();
   const { data: checkins, error } = await supabase
     .from('checkins')
-    .select('day_number, pain, fever, bleeding, swelling, feeling, notes, created_at')
+    .select('day_number, pain, fever, bleeding, swelling, redness, itching, crusts, feeling, notes, created_at')
     .eq('patient_id', patientId)
     .order('day_number', { ascending: true });
   if (error) throw error;
@@ -102,7 +103,8 @@ export async function getPatientTimeline(patientId: string): Promise<TimelineSte
   return (checkins ?? []).map((c: any) => {
     const alerts: string[] = [];
     if (c.fever) alerts.push('Febre relatada');
-    if (c.bleeding) alerts.push('Sangramento relatado');
+    if (c.bleeding) alerts.push('Sangramento no couro');
+    if (c.redness) alerts.push('Vermelhidão no couro');
     if (c.pain != null && c.pain >= 8) alerts.push(`Dor intensa (nível ${c.pain})`);
     return {
       day: Number(c.day_number ?? 0),
@@ -110,9 +112,12 @@ export async function getPatientTimeline(patientId: string): Promise<TimelineSte
       title: `Check-in do D+${c.day_number ?? 0}`,
       questionnaire: [
         { question: 'Dor (0-10)', answer: c.pain != null ? String(c.pain) : 'não informado' },
-        { question: 'Febre', answer: c.fever ? 'Sim' : 'Não' },
+        { question: 'Vermelhidão no couro', answer: c.redness ? 'Sim' : 'Não' },
+        { question: 'Coceira', answer: c.itching ? 'Sim' : 'Não' },
+        { question: 'Crostas', answer: c.crusts ? 'Sim' : 'Não' },
+        { question: 'Edema (inchaço frontal)', answer: c.swelling ? 'Sim' : 'Não' },
         { question: 'Sangramento', answer: c.bleeding ? 'Sim' : 'Não' },
-        { question: 'Inchaço', answer: c.swelling ? 'Sim' : 'Não' },
+        { question: 'Febre', answer: c.fever ? 'Sim' : 'Não' },
         { question: 'Como se sente', answer: c.feeling ?? '—' },
       ],
       observations: c.notes ?? undefined,
@@ -134,6 +139,7 @@ export interface NewPatientInput {
   surgeryDate?: string;
   hospital?: string;
   surgeon?: string;
+  doctorId?: string;
 }
 
 export async function createPatient(input: NewPatientInput): Promise<string> {
@@ -167,6 +173,7 @@ export async function createPatient(input: NewPatientInput): Promise<string> {
       date: input.surgeryDate,
       hospital: input.hospital || null,
       surgeon: input.surgeon || null,
+      doctor_id: input.doctorId || null,
       status: 'active',
     } as any);
     if (sErr) throw sErr;
@@ -307,6 +314,23 @@ export async function getCalendarEvents(): Promise<CalendarEvent[]> {
 }
 
 // ---------- mensagens ----------
+const CHAT_BUCKET = 'chat-attachments';
+
+// Gera URLs assinadas (bucket privado) em lote; devolve mapa path -> url.
+async function signAttachments(paths: string[]): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  const unique = Array.from(new Set(paths.filter(Boolean)));
+  if (unique.length === 0) return map;
+  const supabase = createClient();
+  const { data } = await supabase.storage
+    .from(CHAT_BUCKET)
+    .createSignedUrls(unique, 60 * 60); // 1h
+  (data ?? []).forEach((s: any) => {
+    if (s.path && s.signedUrl) map.set(s.path, s.signedUrl);
+  });
+  return map;
+}
+
 export async function getMessages(): Promise<Message[]> {
   const supabase = createClient();
   const { data, error } = await supabase
@@ -314,24 +338,67 @@ export async function getMessages(): Promise<Message[]> {
     .select('*')
     .order('created_at', { ascending: true });
   if (error) throw error;
-  return (data ?? []).map((m: any) => ({
+  const rows = (data ?? []) as any[];
+  const urls = await signAttachments(rows.map((m) => m.attachment_path).filter(Boolean));
+  return rows.map((m) => mapMessageRow(m, urls));
+}
+
+// Converte uma linha do banco em Message. `urls` é o mapa de URLs assinadas já resolvidas.
+export function mapMessageRow(m: any, urls?: Map<string, string>): Message {
+  return {
     id: m.id,
     patientId: m.patient_id,
     sender: m.sender === 'staff' ? 'doctor' : 'patient',
-    text: m.body,
+    text: m.body ?? '',
     time: timeOf(m.created_at),
-    type: 'text',
+    type: (m.attachment_type ?? 'text') as Message['type'],
     read: m.read,
-  }));
+    attachmentUrl: m.attachment_path ? urls?.get(m.attachment_path) : undefined,
+    attachmentName: m.attachment_name ?? undefined,
+  };
 }
 
-export async function sendMessage(patientId: string, body: string): Promise<void> {
+// Assina o anexo de uma única linha (usado pelo realtime).
+export async function signMessageRow(m: any): Promise<Message> {
+  if (!m.attachment_path) return mapMessageRow(m);
+  const urls = await signAttachments([m.attachment_path]);
+  return mapMessageRow(m, urls);
+}
+
+// Faz upload do anexo e devolve os metadados para gravar na mensagem.
+export async function uploadChatAttachment(
+  patientId: string,
+  file: File,
+  type: 'image' | 'pdf' | 'video' | 'audio',
+): Promise<{ path: string; type: typeof type; name: string }> {
+  const supabase = createClient();
+  const ext = file.name.includes('.') ? file.name.split('.').pop() : 'bin';
+  const path = `${patientId}/${type}_${Date.now()}.${ext}`;
+  const { error } = await supabase.storage
+    .from(CHAT_BUCKET)
+    .upload(path, file, { contentType: file.type || undefined, upsert: false });
+  if (error) throw error;
+  return { path, type, name: file.name };
+}
+
+export async function sendMessage(
+  patientId: string,
+  body: string,
+  attachment?: { path: string; type: 'image' | 'pdf' | 'video' | 'audio'; name: string },
+): Promise<void> {
   const supabase = createClient();
   const { data: prof } = await supabase.from('profiles').select('clinic_id').maybeSingle();
   const clinicId = (prof as any)?.clinic_id;
-  const { error } = await supabase
-    .from('messages')
-    .insert({ patient_id: patientId, clinic_id: clinicId, sender: 'staff', body, read: true } as any);
+  const { error } = await supabase.from('messages').insert({
+    patient_id: patientId,
+    clinic_id: clinicId,
+    sender: 'staff',
+    body: body || null,
+    read: true,
+    attachment_path: attachment?.path ?? null,
+    attachment_type: attachment?.type ?? null,
+    attachment_name: attachment?.name ?? null,
+  } as any);
   if (error) throw error;
 }
 
@@ -370,10 +437,60 @@ export async function getTeam(): Promise<User[]> {
     id: p.id,
     name: p.full_name ?? '—',
     email: '',
-    role: p.role === 'staff' ? 'Equipe' : 'Paciente',
-    active: true,
+    role: p.job_title || (p.role === 'staff' ? 'Equipe' : 'Paciente'),
+    active: p.active !== false,
     lastAccess: relativeTime(p.created_at),
   }));
+}
+
+// Perfil do usuário logado (para decidir o que ele pode gerenciar).
+export async function getCurrentProfile(): Promise<{ id: string; jobTitle: string | null; isAdmin: boolean } | null> {
+  const supabase = createClient();
+  const { data: auth } = await supabase.auth.getUser();
+  if (!auth.user) return null;
+  const { data } = await supabase.from('profiles').select('job_title').eq('id', auth.user.id).maybeSingle();
+  const jobTitle = (data as any)?.job_title ?? null;
+  return { id: auth.user.id, jobTitle, isAdmin: jobTitle === 'Administrador' };
+}
+
+// Edita nome e/ou permissão de um membro (Edge Function, só admin).
+export async function updateTeamMember(input: {
+  userId: string;
+  name?: string;
+  permission?: string;
+}): Promise<void> {
+  const supabase = createClient();
+  const { data, error } = await supabase.functions.invoke('manage-user', {
+    body: { action: 'update', ...input },
+  });
+  const bodyError = (data as { error?: string } | null)?.error;
+  if (error || bodyError) throw new Error(bodyError ?? 'Não foi possível atualizar o usuário.');
+}
+
+// Ativa/inativa um membro (Edge Function, só admin).
+export async function setTeamMemberActive(userId: string, active: boolean): Promise<void> {
+  const supabase = createClient();
+  const { data, error } = await supabase.functions.invoke('manage-user', {
+    body: { action: 'setActive', userId, active },
+  });
+  const bodyError = (data as { error?: string } | null)?.error;
+  if (error || bodyError) throw new Error(bodyError ?? 'Não foi possível alterar o status.');
+}
+
+// Cria um membro da equipe via Edge Function (auth + senha aleatória por e-mail).
+export async function createTeamMember(input: {
+  name: string;
+  email: string;
+  permission: string;
+}): Promise<{ emailed: boolean; tempPassword?: string }> {
+  const supabase = createClient();
+  const { data, error } = await supabase.functions.invoke('create-user', { body: input });
+  const bodyError = (data as { error?: string } | null)?.error;
+  if (error || bodyError) {
+    throw new Error(bodyError ?? 'Não foi possível criar o usuário.');
+  }
+  const d = data as { emailed?: boolean; tempPassword?: string };
+  return { emailed: !!d.emailed, tempPassword: d.tempPassword };
 }
 
 export async function getCannedResponses(): Promise<CannedResponse[]> {
@@ -423,4 +540,100 @@ export async function getClinicInfo(): Promise<ClinicInfo | null> {
     activePatientLimit: c.active_patient_limit,
     activePatients: count ?? 0,
   };
+}
+
+// ---------- médicos ----------
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function rowToDoctor(d: any): Doctor {
+  return {
+    id: d.id,
+    name: d.full_name,
+    specialty: d.specialty ?? '',
+    crm: d.crm ?? '',
+    phone: d.phone ?? '',
+    email: d.email ?? '',
+    active: d.active !== false,
+  };
+}
+
+export async function getDoctors(activeOnly = false): Promise<Doctor[]> {
+  const supabase = createClient();
+  let q = supabase.from('doctors').select('*').order('full_name');
+  if (activeOnly) q = q.eq('active', true);
+  const { data, error } = await q;
+  if (error) throw error;
+  return (data ?? []).map(rowToDoctor);
+}
+
+export interface DoctorInput {
+  name: string;
+  specialty?: string;
+  crm?: string;
+  phone?: string;
+  email?: string;
+}
+
+export async function createDoctor(input: DoctorInput): Promise<void> {
+  const supabase = createClient();
+  const { data: prof } = await supabase.from('profiles').select('clinic_id').maybeSingle();
+  const clinicId = (prof as any)?.clinic_id;
+  if (!clinicId) throw new Error('Clínica do usuário não encontrada.');
+  const { error } = await supabase.from('doctors').insert({
+    clinic_id: clinicId,
+    full_name: input.name.trim(),
+    specialty: input.specialty || null,
+    crm: input.crm || null,
+    phone: input.phone || null,
+    email: input.email || null,
+  } as any);
+  if (error) throw error;
+}
+
+export async function updateDoctor(id: string, input: DoctorInput): Promise<void> {
+  const supabase = createClient();
+  const { error } = await supabase
+    .from('doctors')
+    .update({
+      full_name: input.name.trim(),
+      specialty: input.specialty || null,
+      crm: input.crm || null,
+      phone: input.phone || null,
+      email: input.email || null,
+    } as any)
+    .eq('id', id);
+  if (error) throw error;
+}
+
+export async function setDoctorActive(id: string, active: boolean): Promise<void> {
+  const supabase = createClient();
+  const { error } = await supabase.from('doctors').update({ active } as any).eq('id', id);
+  if (error) throw error;
+}
+
+// Cria um agendamento na agenda (o médico escolhido vira o profissional do evento).
+export async function createAppointment(input: {
+  patientId: string;
+  doctorId: string;
+  title: string;
+  type: 'return' | 'consultation';
+  scheduledAt: string; // ISO
+}): Promise<void> {
+  const supabase = createClient();
+  const { data: prof } = await supabase.from('profiles').select('clinic_id').maybeSingle();
+  const clinicId = (prof as any)?.clinic_id;
+  if (!clinicId) throw new Error('Clínica do usuário não encontrada.');
+
+  const { data: doctor } = await supabase.from('doctors').select('full_name').eq('id', input.doctorId).maybeSingle();
+  const professional = (doctor as any)?.full_name ?? null;
+
+  const { error } = await supabase.from('appointments').insert({
+    clinic_id: clinicId,
+    patient_id: input.patientId,
+    doctor_id: input.doctorId,
+    professional,
+    title: input.title.trim(),
+    type: input.type,
+    scheduled_at: input.scheduledAt,
+  } as any);
+  if (error) throw error;
 }

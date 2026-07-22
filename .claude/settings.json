@@ -28,7 +28,13 @@
       "Bash(curl -s -o /dev/null -w '%{http_code}' http://localhost:3001/)",
       "Bash(echo \"/ →      $\\(curl -s -o /dev/null -w '%{http_code}' http://localhost:3001/\\)\")",
       "Bash(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' http://localhost:3001/dashboard)",
-      "Bash(echo \"/dashboard \\(sem sessão\\) → $\\(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' http://localhost:3001/dashboard\\)\")"
+      "Bash(echo \"/dashboard \\(sem sessão\\) → $\\(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' http://localhost:3001/dashboard\\)\")",
+      "Bash(pnpm typecheck *)",
+      "Bash(flutter pub *)",
+      "Skill(artifact-design)",
+      "Skill(artifact-design:*)",
+      "Bash(command -v wkhtmltopdf weasyprint)",
+      "Bash(command -v npx)"
     ]
   }
 }

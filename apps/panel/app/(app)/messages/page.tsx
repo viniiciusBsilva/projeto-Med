@@ -22,8 +22,23 @@ import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { StatusBadge } from '@/components/status-badges';
 import type { Patient, Message } from '@/lib/types';
-import { getPatients, getMessages, sendMessage } from '@/lib/queries';
+import {
+  getPatients,
+  getMessages,
+  sendMessage,
+  uploadChatAttachment,
+  signMessageRow,
+} from '@/lib/queries';
+import { createClient } from '@/lib/supabase/client';
 import { cn } from '@/lib/utils';
+
+type AttachKind = 'image' | 'pdf' | 'video' | 'audio';
+const ACCEPT: Record<AttachKind, string> = {
+  image: 'image/*',
+  pdf: 'application/pdf',
+  video: 'video/*',
+  audio: 'audio/*',
+};
 
 export default function MessagesPage() {
   const [patients, setPatients] = React.useState<Patient[]>([]);
@@ -31,7 +46,12 @@ export default function MessagesPage() {
   const [selectedPatient, setSelectedPatient] = React.useState<Patient | null>(null);
   const [search, setSearch] = React.useState('');
   const [input, setInput] = React.useState('');
+  const [uploading, setUploading] = React.useState<AttachKind | null>(null);
   const scrollRef = React.useRef<HTMLDivElement>(null);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const pendingKind = React.useRef<AttachKind | null>(null);
+  const selectedPatientRef = React.useRef<Patient | null>(null);
+  selectedPatientRef.current = selectedPatient;
 
   React.useEffect(() => {
     getPatients().then((p) => {
@@ -39,6 +59,37 @@ export default function MessagesPage() {
       setSelectedPatient((cur) => cur ?? p[0] ?? null);
     });
     getMessages().then(setMessages);
+  }, []);
+
+  // Realtime: novas mensagens (de qualquer paciente) entram sem refresh.
+  React.useEffect(() => {
+    const supabase = createClient();
+    const channel = supabase
+      .channel('messages-panel')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'messages' },
+        async (payload) => {
+          const msg = await signMessageRow(payload.new);
+          setMessages((prev) =>
+            prev.some((m) => m.id === msg.id) ? prev : [...prev, msg],
+          );
+        },
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'messages' },
+        (payload) => {
+          const row: any = payload.new;
+          setMessages((prev) =>
+            prev.map((m) => (m.id === row.id ? { ...m, read: row.read } : m)),
+          );
+        },
+      )
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   const patientMessages = messages.filter((m) => m.patientId === selectedPatient?.id);
@@ -56,10 +107,38 @@ export default function MessagesPage() {
     if (!text || !selectedPatient) return;
     setInput('');
     try {
+      // O realtime cuida de inserir a mensagem na lista.
       await sendMessage(selectedPatient.id, text);
-      setMessages(await getMessages());
     } catch {
       setInput(text);
+    }
+  };
+
+  const openPicker = (kind: AttachKind) => {
+    if (!selectedPatient || uploading) return;
+    pendingKind.current = kind;
+    if (fileInputRef.current) {
+      fileInputRef.current.accept = ACCEPT[kind];
+      fileInputRef.current.value = '';
+      fileInputRef.current.click();
+    }
+  };
+
+  const handleFileChosen = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    const kind = pendingKind.current;
+    const patient = selectedPatientRef.current;
+    if (!file || !kind || !patient) return;
+    setUploading(kind);
+    try {
+      const attachment = await uploadChatAttachment(patient.id, file, kind);
+      await sendMessage(patient.id, input.trim(), attachment);
+      setInput('');
+    } catch (err) {
+      console.error('Falha ao enviar anexo', err);
+    } finally {
+      setUploading(null);
+      pendingKind.current = null;
     }
   };
 
@@ -166,18 +245,8 @@ export default function MessagesPage() {
                         : 'rounded-br-sm bg-primary text-primary-foreground'
                     )}
                   >
-                    {msg.type === 'image' ? (
-                      <div>
-                        <img
-                          src="https://images.pexels.com/photos/4173251/pexels-photo-4173251.jpeg?auto=compress&cs=tinysrgb&w=400"
-                          alt="Foto enviada"
-                          className="mb-2 h-40 w-56 rounded-lg object-cover"
-                        />
-                        <p className="text-sm">{msg.text}</p>
-                      </div>
-                    ) : (
-                      <p className="text-sm leading-relaxed">{msg.text}</p>
-                    )}
+                    <MessageAttachment msg={msg} isPatient={isPatient} />
+                    {msg.text && <p className="text-sm leading-relaxed">{msg.text}</p>}
                     <div
                       className={cn(
                         'mt-1 flex items-center justify-end gap-1 text-xs',
@@ -199,8 +268,20 @@ export default function MessagesPage() {
 
           {/* Input */}
           <div className="border-t p-3">
+            <input
+              ref={fileInputRef}
+              type="file"
+              className="hidden"
+              onChange={handleFileChosen}
+            />
             <div className="flex items-center gap-2">
-              <Button variant="ghost" size="icon" className="shrink-0">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="shrink-0"
+                onClick={() => openPicker('image')}
+                disabled={!selectedPatient || !!uploading}
+              >
                 <Paperclip className="h-4.5 w-4.5" style={{ width: 18, height: 18 }} />
               </Button>
               <Input
@@ -218,20 +299,46 @@ export default function MessagesPage() {
               </Button>
             </div>
             <div className="mt-2 flex items-center gap-1">
-              <span className="text-xs text-muted-foreground">Anexar:</span>
-              <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs">
+              <span className="text-xs text-muted-foreground">
+                {uploading ? 'Enviando anexo…' : 'Anexar:'}
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 gap-1 text-xs"
+                onClick={() => openPicker('image')}
+                disabled={!selectedPatient || !!uploading}
+              >
                 <ImageIcon className="h-3.5 w-3.5" style={{ width: 14, height: 14 }} />
                 Imagem
               </Button>
-              <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 gap-1 text-xs"
+                onClick={() => openPicker('pdf')}
+                disabled={!selectedPatient || !!uploading}
+              >
                 <FileText className="h-3.5 w-3.5" style={{ width: 14, height: 14 }} />
                 PDF
               </Button>
-              <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 gap-1 text-xs"
+                onClick={() => openPicker('video')}
+                disabled={!selectedPatient || !!uploading}
+              >
                 <Video className="h-3.5 w-3.5" style={{ width: 14, height: 14 }} />
                 Vídeo
               </Button>
-              <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 gap-1 text-xs"
+                onClick={() => openPicker('audio')}
+                disabled={!selectedPatient || !!uploading}
+              >
                 <Mic className="h-3.5 w-3.5" style={{ width: 14, height: 14 }} />
                 Áudio
               </Button>
@@ -240,5 +347,48 @@ export default function MessagesPage() {
         </div>
       </Card>
     </div>
+  );
+}
+
+function MessageAttachment({ msg, isPatient }: { msg: Message; isPatient: boolean }) {
+  if (msg.type === 'text' || !msg.attachmentUrl) return null;
+  const url = msg.attachmentUrl;
+
+  if (msg.type === 'image') {
+    return (
+      <a href={url} target="_blank" rel="noreferrer" className="block">
+        <img
+          src={url}
+          alt={msg.attachmentName ?? 'Imagem enviada'}
+          className="mb-2 max-h-64 w-full max-w-xs rounded-lg object-cover"
+        />
+      </a>
+    );
+  }
+
+  if (msg.type === 'video') {
+    return (
+      <video src={url} controls className="mb-2 max-h-64 w-full max-w-xs rounded-lg" />
+    );
+  }
+
+  if (msg.type === 'audio') {
+    return <audio src={url} controls className="mb-2 w-56 max-w-full" />;
+  }
+
+  // pdf (e fallback)
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noreferrer"
+      className={cn(
+        'mb-2 flex items-center gap-2 rounded-lg border px-3 py-2 text-sm',
+        isPatient ? 'bg-muted/60' : 'bg-primary-foreground/10',
+      )}
+    >
+      <FileText className="h-4 w-4 shrink-0" style={{ width: 16, height: 16 }} />
+      <span className="truncate">{msg.attachmentName ?? 'Documento.pdf'}</span>
+    </a>
   );
 }

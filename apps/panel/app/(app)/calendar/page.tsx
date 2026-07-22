@@ -6,8 +6,24 @@ import { PageHeader } from '@/components/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import type { CalendarEvent } from '@/lib/types';
-import { getCalendarEvents } from '@/lib/queries';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import type { CalendarEvent, Patient, Doctor } from '@/lib/types';
+import { getCalendarEvents, getPatients, getDoctors, createAppointment } from '@/lib/queries';
 import { cn } from '@/lib/utils';
 
 const todayIso = new Date().toISOString().slice(0, 10);
@@ -30,9 +46,58 @@ export default function CalendarPage() {
   const [selectedDate, setSelectedDate] = React.useState<string | null>(todayIso);
   const [calendarEvents, setCalendarEvents] = React.useState<CalendarEvent[]>([]);
 
-  React.useEffect(() => {
+  // Modal "Novo agendamento"
+  const [open, setOpen] = React.useState(false);
+  const [patients, setPatients] = React.useState<Patient[]>([]);
+  const [doctors, setDoctors] = React.useState<Doctor[]>([]);
+  const [apPatient, setApPatient] = React.useState('');
+  const [apDoctor, setApDoctor] = React.useState('');
+  const [apType, setApType] = React.useState<'return' | 'consultation'>('return');
+  const [apTitle, setApTitle] = React.useState('');
+  const [apDate, setApDate] = React.useState(selectedDate ?? todayIso);
+  const [apTime, setApTime] = React.useState('09:00');
+  const [apSubmitting, setApSubmitting] = React.useState(false);
+  const [apError, setApError] = React.useState<string | null>(null);
+
+  const refreshEvents = React.useCallback(() => {
     getCalendarEvents().then(setCalendarEvents).catch(() => {});
   }, []);
+
+  React.useEffect(() => {
+    refreshEvents();
+    getPatients().then(setPatients).catch(() => {});
+    getDoctors(true).then(setDoctors).catch(() => {});
+  }, [refreshEvents]);
+
+  const handleCreateAppointment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setApError(null);
+    if (!apPatient || !apDoctor) {
+      setApError('Selecione o paciente e o médico.');
+      return;
+    }
+    const patientName = patients.find((p) => p.id === apPatient)?.name ?? 'Paciente';
+    const title = apTitle.trim() || `${apType === 'return' ? 'Retorno' : 'Consulta'} - ${patientName}`;
+    setApSubmitting(true);
+    try {
+      await createAppointment({
+        patientId: apPatient,
+        doctorId: apDoctor,
+        title,
+        type: apType,
+        scheduledAt: new Date(`${apDate}T${apTime}:00`).toISOString(),
+      });
+      setOpen(false);
+      setApPatient('');
+      setApDoctor('');
+      setApTitle('');
+      refreshEvents();
+    } catch (err) {
+      setApError(err instanceof Error ? err.message : 'Erro ao agendar.');
+    } finally {
+      setApSubmitting(false);
+    }
+  };
 
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
@@ -56,10 +121,96 @@ export default function CalendarPage() {
   return (
     <div className="space-y-6">
       <PageHeader title="Agenda" description="Retornos, consultas, cirurgias e alertas">
-        <Button size="sm">
-          <Plus className="mr-1.5 h-4 w-4" />
-          Novo agendamento
-        </Button>
+        <Dialog open={open} onOpenChange={setOpen}>
+          <DialogTrigger asChild>
+            <Button size="sm">
+              <Plus className="mr-1.5 h-4 w-4" />
+              Novo agendamento
+            </Button>
+          </DialogTrigger>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Novo agendamento</DialogTitle>
+            </DialogHeader>
+            <form onSubmit={handleCreateAppointment} className="space-y-4 py-2">
+              <div className="space-y-2">
+                <Label htmlFor="ap-patient">Paciente</Label>
+                <Select value={apPatient} onValueChange={setApPatient}>
+                  <SelectTrigger id="ap-patient">
+                    <SelectValue placeholder="Selecione o paciente" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {patients.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="ap-doctor">Médico</Label>
+                <Select value={apDoctor} onValueChange={setApDoctor}>
+                  <SelectTrigger id="ap-doctor">
+                    <SelectValue placeholder="Selecione o médico" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {doctors.length === 0 && (
+                      <div className="px-2 py-1.5 text-xs text-muted-foreground">
+                        Nenhum médico ativo. Cadastre em Médicos.
+                      </div>
+                    )}
+                    {doctors.map((d) => (
+                      <SelectItem key={d.id} value={d.id}>
+                        {d.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <div className="space-y-2">
+                  <Label htmlFor="ap-type">Tipo</Label>
+                  <Select value={apType} onValueChange={(v) => setApType(v as 'return' | 'consultation')}>
+                    <SelectTrigger id="ap-type">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="return">Retorno</SelectItem>
+                      <SelectItem value="consultation">Consulta</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="ap-date">Data</Label>
+                  <Input id="ap-date" type="date" value={apDate} onChange={(e) => setApDate(e.target.value)} required />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="ap-time">Hora</Label>
+                  <Input id="ap-time" type="time" value={apTime} onChange={(e) => setApTime(e.target.value)} required />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="ap-title">Título (opcional)</Label>
+                <Input
+                  id="ap-title"
+                  placeholder="Ex: Retorno D+15"
+                  value={apTitle}
+                  onChange={(e) => setApTitle(e.target.value)}
+                />
+              </div>
+              {apError && <p className="text-sm text-destructive">{apError}</p>}
+              <div className="flex justify-end gap-2 pt-2">
+                <Button type="button" variant="outline" onClick={() => setOpen(false)} disabled={apSubmitting}>
+                  Cancelar
+                </Button>
+                <Button type="submit" disabled={apSubmitting}>
+                  {apSubmitting ? 'Agendando...' : 'Agendar'}
+                </Button>
+              </div>
+            </form>
+          </DialogContent>
+        </Dialog>
       </PageHeader>
 
       <div className="grid gap-6 lg:grid-cols-3">

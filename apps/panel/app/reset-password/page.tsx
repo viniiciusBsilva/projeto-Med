@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { createClient } from '@/lib/supabase/client';
 
-type Step = 'request' | 'confirm' | 'done';
+type Step = 'request' | 'code' | 'password' | 'done';
 
 export default function ResetPasswordPage() {
   const router = useRouter();
@@ -35,10 +35,32 @@ export default function ResetPasswordPage() {
       setError('Não foi possível enviar o código. Tente novamente.');
       return;
     }
-    setStep('confirm');
+    setStep('code');
   };
 
-  const confirmReset = async (e: React.FormEvent) => {
+  // Etapa 2: valida o código (sem trocar a senha). Só avança se estiver correto.
+  const verifyCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    if (code.trim().length < 6) {
+      setError('Digite o código de 6 dígitos.');
+      return;
+    }
+    setLoading(true);
+    const { data, error } = await supabase.functions.invoke('password-reset-verify', {
+      body: { email: email.trim().toLowerCase(), code: code.trim() },
+    });
+    setLoading(false);
+    const bodyError = (data as { error?: string } | null)?.error;
+    if (error || bodyError) {
+      setError(bodyError ?? 'Código inválido ou expirado.');
+      return;
+    }
+    setStep('password');
+  };
+
+  // Etapa 3: define a nova senha (revalida o código e troca a senha).
+  const setNewPassword = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     if (password.length < 8) {
@@ -54,10 +76,11 @@ export default function ResetPasswordPage() {
       body: { email: email.trim().toLowerCase(), code: code.trim(), newPassword: password },
     });
     setLoading(false);
-    // Erros de negócio vêm no corpo (status !=2xx faz o invoke retornar error).
     const bodyError = (data as { error?: string } | null)?.error;
     if (error || bodyError) {
-      setError(bodyError ?? 'Código inválido ou expirado.');
+      // Se o código expirou/foi invalidado nesse meio tempo, volta pra etapa do código.
+      setError(bodyError ?? 'Não foi possível redefinir a senha.');
+      setStep('code');
       return;
     }
     setStep('done');
@@ -113,7 +136,7 @@ export default function ResetPasswordPage() {
             </>
           )}
 
-          {step === 'confirm' && (
+          {step === 'code' && (
             <>
               <div className="mb-8">
                 <h1 className="text-3xl font-bold tracking-tight">Digite o código</h1>
@@ -121,7 +144,7 @@ export default function ResetPasswordPage() {
                   Enviamos um código para <span className="font-medium text-foreground">{email}</span>. Ele expira em 15 minutos.
                 </p>
               </div>
-              <form onSubmit={confirmReset} className="space-y-5">
+              <form onSubmit={verifyCode} className="space-y-5">
                 <div className="space-y-2">
                   <Label htmlFor="code">Código de verificação</Label>
                   <div className="relative">
@@ -134,10 +157,35 @@ export default function ResetPasswordPage() {
                       className="pl-10 tracking-[0.4em]"
                       value={code}
                       onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
+                      autoFocus
                       required
                     />
                   </div>
                 </div>
+                {error && <ErrorBox message={error} />}
+                <Button type="submit" className="w-full" size="lg" disabled={loading}>
+                  {loading ? 'Verificando...' : (
+                    <span className="flex items-center gap-2">Verificar código <ArrowRight className="h-4 w-4" /></span>
+                  )}
+                </Button>
+                <button
+                  type="button"
+                  onClick={() => { setStep('request'); setCode(''); setError(null); }}
+                  className="flex w-full items-center justify-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+                >
+                  Usar outro e-mail
+                </button>
+              </form>
+            </>
+          )}
+
+          {step === 'password' && (
+            <>
+              <div className="mb-8">
+                <h1 className="text-3xl font-bold tracking-tight">Nova senha</h1>
+                <p className="mt-2 text-muted-foreground">Código confirmado. Defina sua nova senha.</p>
+              </div>
+              <form onSubmit={setNewPassword} className="space-y-5">
                 <div className="space-y-2">
                   <Label htmlFor="password">Nova senha</Label>
                   <div className="relative">
@@ -150,6 +198,7 @@ export default function ResetPasswordPage() {
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       autoComplete="new-password"
+                      autoFocus
                       required
                     />
                     <button
@@ -181,13 +230,6 @@ export default function ResetPasswordPage() {
                 <Button type="submit" className="w-full" size="lg" disabled={loading}>
                   {loading ? 'Redefinindo...' : 'Redefinir senha'}
                 </Button>
-                <button
-                  type="button"
-                  onClick={() => { setStep('request'); setError(null); }}
-                  className="flex w-full items-center justify-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
-                >
-                  Usar outro e-mail
-                </button>
               </form>
             </>
           )}

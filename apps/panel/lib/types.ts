@@ -65,11 +65,16 @@ export interface Message {
   time: string;
   type: 'text' | 'image' | 'pdf' | 'video' | 'audio';
   read: boolean;
+  /** URL assinada do anexo (buckets privados), quando houver. */
+  attachmentUrl?: string;
+  /** Nome original do arquivo (usado em PDF/vídeo/áudio). */
+  attachmentName?: string;
 }
 
 export interface Notification {
   id: string;
-  type: 'no-response' | 'pain' | 'fever' | 'photo' | 'protocol' | 'message';
+  // Tipo livre vindo do banco (ex.: 'redness', 'bleeding', 'itching', 'message', 'fever'...).
+  type: string;
   title: string;
   description: string;
   patientName: string;
@@ -101,6 +106,16 @@ export interface CannedResponse {
   id: string;
   title: string;
   body: string;
+}
+
+export interface Doctor {
+  id: string;
+  name: string;
+  specialty: string;
+  crm: string;
+  phone: string;
+  email: string;
+  active: boolean;
 }
 
 export interface ClinicInfo {

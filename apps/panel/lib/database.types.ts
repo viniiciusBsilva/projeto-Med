@@ -32,6 +32,7 @@ export type Database = {
       appointments: GenericTable;
       notifications: GenericTable;
       canned_responses: GenericTable;
+      doctors: GenericTable;
     };
     Views: {
       patient_overview: { Row: GenericRow; Relationships: [] };

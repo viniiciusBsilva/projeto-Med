@@ -1,6 +1,7 @@
 # PRD — PostCare Pro
 
 > Sistema de acompanhamento pós-operatório para clínicas.
+> **Vertical de foco atual: transplante capilar (FUE).**
 > Documento de referência de produto. Fonte da verdade para escopo e regras de negócio.
 
 ---
@@ -8,20 +9,25 @@
 ## 1. Visão
 
 PostCare Pro é um SaaS multi-clínica que organiza e automatiza o acompanhamento
-pós-operatório de pacientes. A clínica cadastra o paciente e a cirurgia; o sistema
+pós-operatório de pacientes. A clínica cadastra o paciente e o procedimento; o sistema
 calcula o dia do pós (D+n), entrega a orientação certa no momento certo, coleta o
 estado do paciente via check-ins e levanta alertas de risco para a equipe agir.
 
-**Frase-guia:** transformar o pós-operatório em um processo seguro, organizado e automatizado.
+**Foco atual:** o produto está sendo lançado para **clínicas de transplante capilar (FUE)** —
+os protocolos, sinais de check-in e exemplos padrão são desse contexto. O **motor é genérico
+(multi-especialidade)**: o mesmo schema/engine atende outras verticais no futuro sem retrabalho.
+
+**Frase-guia:** transformar o pós-operatório do transplante capilar em um processo seguro,
+organizado e automatizado.
 
 ## 2. Problema → Solução
 
 | Problema | Solução no produto |
 | --- | --- |
-| Falta de acompanhamento estruturado | Protocolos por especialidade com orientações por dia |
-| Insegurança do paciente | Orientação diária + canal de mensagem direto com a clínica |
-| Mensagens repetitivas consumindo a equipe | Orientações automáticas + respostas prontas |
-| Risco de complicações passar despercebido | Check-ins + alertas por regra (triagem) |
+| Falta de acompanhamento estruturado | Protocolo de transplante capilar com orientações por dia (D0 → D+180) |
+| Insegurança do paciente (edema, crostas, shock loss) | Orientação diária + canal de mensagem direto com a clínica |
+| Mensagens repetitivas consumindo a equipe | Orientações automáticas + respostas prontas (edema, crostas, shock loss…) |
+| Risco de complicações (foliculite/infecção) passar despercebido | Check-ins com sinais do couro + alertas por regra (triagem) |
 
 ## 3. Produtos
 
@@ -102,24 +108,35 @@ Relatórios e exportações.
 - **Respostas prontas**: gerenciar templates de mensagem.
 - **Assinatura**: plano atual, limite de pacientes ativos, uso, "Gerenciar assinatura".
 
-## 6. App do Paciente (Flutter)
+## 6. App do Paciente (Flutter) — escopo; **build em fase futura**
 
-Foco no essencial do paciente:
+> O app **ainda não foi construído**. Esta seção define o escopo do MVP do paciente
+> (transplante capilar). As três funções centrais são **agendamento, acompanhamento e push**.
+
 1. **Onboarding/vínculo** — paciente entra via convite/código da clínica e cria conta.
-2. **Orientação do dia** — mostra os passos do protocolo para o D+n atual.
-3. **Check-in diário** — dor (0–10), febre, sangramento, inchaço, como se sente, observações.
+2. **Acompanhamento**
+   - **Orientação do dia** — passos do protocolo capilar para o D+n atual (edema, lavagem, crostas, shock loss).
+   - **Check-in diário** — dor (0–10), **vermelhidão no couro**, **coceira**, **crostas**, edema (inchaço frontal),
+     sangramento, febre, como se sente, observações (ver §7 — sinais adaptados ao capilar).
+3. **Agendamento** — o paciente **solicita/agenda** retornos e consultas (não apenas visualiza); a clínica confirma na Agenda (§5.4).
 4. **Mensagens** — conversa com a clínica.
-5. **Retornos** — próximos retornos/consultas.
-6. **Notificações push** — lembrete de check-in, orientação do dia, retorno próximo.
+5. **Notificações push:**
+   - **Alertas de mensagem** — nova mensagem da clínica.
+   - **Agendamento** — confirmação/lembrete de retorno próximo e mudanças na agenda.
+   - **Resumo de evolução** — push com o resumo do próprio acompanhamento (ex.: marco D+30/shock loss,
+     evolução das fotos). *(É o "relatório" do paciente — distinto dos Relatórios da clínica em §5.7.)*
+   - Lembrete de check-in / orientação do dia.
 
 ## 7. Regras de negócio-chave
 
 - **Cálculo do D+n:** `dia_do_pos = data_atual − data_cirurgia`. Nunca armazenado
   solto; calculado a partir da cirurgia (trigger no check-in / cálculo na leitura).
-- **Geração de alerta (triagem, não diagnóstico):** regra determinística no banco
-  a cada check-in — febre ou sangramento → `critical`; dor ≥ 8 → `high`;
-  dor ≥ 6 ou "sente-se mal" → `medium`. A decisão clínica é **sempre humana**;
-  a UI deve deixar isso explícito.
+- **Geração de alerta (triagem, não diagnóstico) — sinais do transplante capilar:** regra
+  determinística no banco a cada check-in — **febre** ou **sangramento** ou (**vermelhidão
+  no couro** + dor ≥ 6) → `critical` (possível infecção/foliculite); dor ≥ 8 → `high`;
+  dor ≥ 6 ou **coceira** ou "sente-se mal" → `medium`. A decisão clínica é **sempre humana**;
+  a UI deve deixar isso explícito. Campos coletados: `pain, fever, bleeding, swelling`
+  (edema frontal), `redness, itching, crusts, feeling, notes`.
 - **Status do paciente:** `active` / `finished` no banco; "em alerta" é derivado
   de alertas `open`.
 - **Multi-tenant:** todo dado é isolado por `clinic_id` via RLS. Equipe só vê a
@@ -148,11 +165,14 @@ Foco no essencial do paciente:
   (agregações do banco). Evolução: Edge Function chamando modelo para redigir o texto.
 
 ## 9. Modelo de dados
-Ver `postcarepro_mvp_schema.sql`. Entidades: `clinics`, `profiles`, `protocols`,
-`protocol_steps`, `patients`, `surgeries`, `checkins`, `alerts`, `messages`.
-Módulos novos deste PRD que ampliam o schema na fase de build completa:
-`appointments` (Agenda), `notifications`, `canned_responses`, `subscriptions`/`plans`,
-`report_snapshots` (opcional).
+Ver `supabase/migrations/`. Entidades: `clinics`, `profiles`, `protocols`,
+`protocol_steps`, `patients`, `surgeries`, `checkins`, `alerts`, `messages`,
+`appointments` (Agenda), `notifications`, `canned_responses` — **já implementadas**.
+- `checkins` inclui os sinais do transplante capilar: `pain, fever, bleeding, swelling`
+  (edema frontal), `redness, itching, crusts, feeling, notes` (migration 0007).
+- `profiles` tem `job_title` (rótulo de permissão) e `active` (ativo/inativo).
+- View `patient_overview` deriva status/risco/D+n.
+Ainda fora do schema (fase futura): `subscriptions`/`plans`, `report_snapshots` (opcional).
 
 ## 10. Fora de escopo (agora)
 - App white-label por clínica; web para o paciente; múltiplos idiomas;

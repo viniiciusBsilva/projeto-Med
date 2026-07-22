@@ -17,18 +17,21 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
-import type { Protocol } from '@/lib/types';
-import { getProtocols, createPatient } from '@/lib/queries';
+import type { Protocol, Doctor } from '@/lib/types';
+import { getProtocols, getDoctors, createPatient } from '@/lib/queries';
 
 export default function NewPatientPage() {
   const router = useRouter();
   const [protocols, setProtocols] = React.useState<Protocol[]>([]);
   const [protocolId, setProtocolId] = React.useState<string>('');
+  const [doctors, setDoctors] = React.useState<Doctor[]>([]);
+  const [doctorId, setDoctorId] = React.useState<string>('');
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     getProtocols().then(setProtocols).catch(() => {});
+    getDoctors(true).then(setDoctors).catch(() => {});
   }, []);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -36,6 +39,7 @@ export default function NewPatientPage() {
     setError(null);
     const fd = new FormData(e.currentTarget);
     const protocol = protocols.find((p) => p.id === protocolId);
+    const doctor = doctors.find((d) => d.id === doctorId);
     setSubmitting(true);
     try {
       await createPatient({
@@ -49,7 +53,8 @@ export default function NewPatientPage() {
         surgeryType: protocol?.name,
         surgeryDate: String(fd.get('surgeryDate') || ''),
         hospital: String(fd.get('hospital') || ''),
-        surgeon: String(fd.get('doctor') || ''),
+        surgeon: doctor?.name,
+        doctorId: doctorId || undefined,
       });
       router.push('/patients');
     } catch (err) {
@@ -162,7 +167,23 @@ export default function NewPatientPage() {
               </div>
               <div className="space-y-2">
                 <Label htmlFor="doctor">Médico responsável</Label>
-                <Input id="doctor" name="doctor" placeholder="Dr(a). Nome" />
+                <Select value={doctorId} onValueChange={setDoctorId}>
+                  <SelectTrigger id="doctor">
+                    <SelectValue placeholder="Selecione o médico" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {doctors.length === 0 && (
+                      <div className="px-2 py-1.5 text-xs text-muted-foreground">
+                        Nenhum médico ativo. Cadastre em Médicos.
+                      </div>
+                    )}
+                    {doctors.map((d) => (
+                      <SelectItem key={d.id} value={d.id}>
+                        {d.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="team">Equipe responsável</Label>
