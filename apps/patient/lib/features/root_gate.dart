@@ -65,7 +65,7 @@ class _NotConfigured extends StatelessWidget {
         padding: EdgeInsets.all(24),
         child: Center(
           child: Text(
-            'Supabase não configurado.\nRode com --dart-define=SUPABASE_URL=... e SUPABASE_ANON_KEY=...',
+            'Supabase não configurado.\nCopie dart_define.example.json → dart_define.json e rode com\nflutter run --dart-define-from-file=dart_define.json',
             textAlign: TextAlign.center,
           ),
         ),

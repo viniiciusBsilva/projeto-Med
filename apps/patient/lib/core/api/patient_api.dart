@@ -172,12 +172,13 @@ class PatientApi {
     return (rows as List).cast<Map<String, dynamic>>();
   }
 
-  /// Stream em tempo real das mensagens do paciente (ordenadas por data).
+  /// Stream em tempo real das mensagens do paciente.
+  /// Ordem crescente (mais antiga em cima, mais nova embaixo) — estilo WhatsApp.
   Stream<List<Map<String, dynamic>>> messagesStream() {
     return _c
         .from('messages')
         .stream(primaryKey: ['id'])
-        .order('created_at')
+        .order('created_at', ascending: true)
         .map((rows) => rows.cast<Map<String, dynamic>>());
   }
 
@@ -230,8 +231,84 @@ class PatientApi {
     return (rows as List).cast<Map<String, dynamic>>();
   }
 
+  /// Stream em tempo real das notificações do paciente (mais recentes primeiro).
+  Stream<List<Map<String, dynamic>>> notificationsStream() {
+    return _c
+        .from('notifications')
+        .stream(primaryKey: ['id'])
+        .order('created_at')
+        .map((rows) {
+          final list = rows.cast<Map<String, dynamic>>();
+          list.sort((a, b) => (b['created_at'] as String).compareTo(a['created_at'] as String));
+          return list;
+        });
+  }
+
   Future<void> markNotificationRead(String id) =>
       _c.from('notifications').update({'read': true}).eq('id', id);
+
+  // ---------- fase de cuidado / checklist ----------
+  static String _todayStr() {
+    final n = DateTime.now();
+    return '${n.year.toString().padLeft(4, '0')}-'
+        '${n.month.toString().padLeft(2, '0')}-'
+        '${n.day.toString().padLeft(2, '0')}';
+  }
+
+  /// Fase de cuidado ativa hoje ('preop' | 'postop'), derivada dos agendamentos. Null se nenhuma.
+  Future<String?> activeCarePhase() async {
+    final today = _todayStr();
+    final rows = await _c
+        .from('appointments')
+        .select('phase, phase_start, phase_end')
+        .not('phase', 'is', null)
+        .lte('phase_start', today)
+        .gte('phase_end', today)
+        .order('phase_start', ascending: false)
+        .limit(1);
+    final list = rows as List;
+    return list.isEmpty ? null : list.first['phase'] as String?;
+  }
+
+  /// Itens do checklist da fase (ativos, ordenados).
+  Future<List<Map<String, dynamic>>> checklistItems(String phase) async {
+    final rows = await _c
+        .from('checklist_items')
+        .select('id, text, sort_order')
+        .eq('phase', phase)
+        .eq('active', true)
+        .order('sort_order', ascending: true);
+    return (rows as List).cast<Map<String, dynamic>>();
+  }
+
+  /// IDs dos itens marcados como feitos hoje.
+  Future<Set<String>> todayChecklistDone() async {
+    final rows = await _c
+        .from('checklist_completions')
+        .select('item_id')
+        .eq('check_date', _todayStr());
+    return (rows as List).map((r) => r['item_id'] as String).toSet();
+  }
+
+  /// Marca/desmarca um item do checklist para hoje.
+  Future<void> setChecklistItemDone(String itemId, bool done) async {
+    final pid = await currentPatientId();
+    if (pid == null) throw Exception('Paciente não encontrado.');
+    final today = _todayStr();
+    if (done) {
+      await _c.from('checklist_completions').upsert(
+        {'patient_id': pid, 'item_id': itemId, 'check_date': today},
+        onConflict: 'patient_id,item_id,check_date',
+      );
+    } else {
+      await _c
+          .from('checklist_completions')
+          .delete()
+          .eq('patient_id', pid)
+          .eq('item_id', itemId)
+          .eq('check_date', today);
+    }
+  }
 
   // ---------- fotos ----------
   /// Envia os bytes da foto ao Storage (web e mobile).
