@@ -14,16 +14,20 @@ import {
   Settings,
   Activity,
   Stethoscope,
+  Building2,
   X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 
+// adminOnly = visível só para o admin geral (super-admin). O médico não vê no menu
+// e as rotas são bloqueadas por layout server (ver app/(app)/<rota>/layout.tsx).
 const navItems = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/patients', label: 'Pacientes', icon: Users },
-  { href: '/doctors', label: 'Médicos', icon: UserRound },
-  { href: '/surgeries', label: 'Cirurgias', icon: Stethoscope },
+  { href: '/doctors', label: 'Médicos', icon: UserRound, adminOnly: true },
+  { href: '/surgeries', label: 'Cirurgias', icon: Stethoscope, adminOnly: true },
+  { href: '/clinics', label: 'Clínicas', icon: Building2, adminOnly: true },
   { href: '/calendar', label: 'Agenda', icon: Calendar },
   { href: '/messages', label: 'Mensagens', icon: MessageSquare, badge: 3 },
   { href: '/notifications', label: 'Notificações', icon: Bell, badge: 4 },
@@ -34,10 +38,12 @@ const navItems = [
 interface SidebarProps {
   open: boolean;
   onClose: () => void;
+  isSuperadmin?: boolean;
 }
 
-export function Sidebar({ open, onClose }: SidebarProps) {
+export function Sidebar({ open, onClose, isSuperadmin }: SidebarProps) {
   const pathname = usePathname();
+  const items = navItems.filter((item) => !item.adminOnly || isSuperadmin);
 
   return (
     <>
@@ -74,7 +80,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
         </div>
 
         <nav className="flex-1 space-y-1 px-3 py-4">
-          {navItems.map((item) => {
+          {items.map((item) => {
             const active = pathname === item.href || pathname.startsWith(item.href + '/');
             return (
               <Link

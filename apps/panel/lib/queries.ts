@@ -90,18 +90,25 @@ function overviewToPatient(r: any): Patient {
     currentDay: r.current_day != null ? Number(r.current_day) : 0,
     protocolId: r.protocol_id ?? '',
     lastUpdate: relativeTime(r.last_activity),
+    clinicId: r.clinic_id ?? '',
   };
 }
 
 // ---------- pacientes ----------
 export async function getPatients(): Promise<Patient[]> {
   const supabase = createClient();
-  const { data, error } = await supabase
-    .from('patient_overview')
-    .select('*')
-    .order('last_activity', { ascending: false });
+  const [{ data, error }, { data: clinics }] = await Promise.all([
+    supabase.from('patient_overview').select('*').order('last_activity', { ascending: false }),
+    supabase.from('clinics').select('id, name'),
+  ]);
   if (error) throw error;
-  return (data ?? []).map(overviewToPatient);
+  // Nome da clínica (usado pelo admin geral, que vê pacientes de várias clínicas).
+  const clinicName = new Map<string, string>((clinics ?? []).map((c: any) => [c.id, c.name]));
+  return (data ?? []).map((r: any) => {
+    const p = overviewToPatient(r);
+    p.clinicName = p.clinicId ? clinicName.get(p.clinicId) : undefined;
+    return p;
+  });
 }
 
 export async function getPatient(id: string): Promise<Patient | null> {
@@ -447,29 +454,126 @@ export async function markNotificationRead(id: string): Promise<void> {
   if (error) throw error;
 }
 
-// ---------- equipe (configurações) ----------
+// ---------- usuários do sistema (configurações) ----------
+// Só usuários de sistema/auth (Admin geral e Profissional) — pacientes ficam de fora.
 export async function getTeam(): Promise<User[]> {
   const supabase = createClient();
-  const { data, error } = await supabase.from('profiles').select('*').order('created_at');
+  const [{ data, error }, { data: clinics }] = await Promise.all([
+    supabase
+      .from('profiles')
+      .select('id, full_name, role, is_superadmin, clinic_id, active, created_at')
+      .neq('role', 'patient')
+      .order('created_at'),
+    supabase.from('clinics').select('id, name'),
+  ]);
   if (error) throw error;
+  const clinicName = new Map<string, string>((clinics ?? []).map((c: any) => [c.id, c.name]));
   return (data ?? []).map((p: any) => ({
     id: p.id,
     name: p.full_name ?? '—',
     email: '',
-    role: p.job_title || (p.role === 'staff' ? 'Equipe' : 'Paciente'),
+    role: p.is_superadmin ? 'Admin geral' : 'Profissional',
     active: p.active !== false,
     lastAccess: relativeTime(p.created_at),
+    clinicName: clinicName.get(p.clinic_id),
   }));
 }
 
-// Perfil do usuário logado (para decidir o que ele pode gerenciar).
-export async function getCurrentProfile(): Promise<{ id: string; jobTitle: string | null; isAdmin: boolean } | null> {
+// ---------- meu perfil + minha clínica ----------
+export async function getMyProfile(): Promise<{ fullName: string; phone: string; email: string } | null> {
   const supabase = createClient();
   const { data: auth } = await supabase.auth.getUser();
   if (!auth.user) return null;
-  const { data } = await supabase.from('profiles').select('job_title').eq('id', auth.user.id).maybeSingle();
+  const { data } = await supabase.from('profiles').select('full_name, phone').eq('id', auth.user.id).maybeSingle();
+  const p = data as any;
+  return { fullName: p?.full_name ?? '', phone: p?.phone ?? '', email: auth.user.email ?? '' };
+}
+
+// Dispara o e-mail de redefinição de senha para o próprio usuário (reaproveita o fluxo de reset).
+export async function sendMyPasswordReset(): Promise<void> {
+  const supabase = createClient();
+  const { data: auth } = await supabase.auth.getUser();
+  if (!auth.user?.email) throw new Error('Sem e-mail na sessão.');
+  const redirectTo = typeof window !== 'undefined' ? `${window.location.origin}/reset-password` : undefined;
+  const { error } = await supabase.auth.resetPasswordForEmail(auth.user.email, { redirectTo });
+  if (error) throw error;
+}
+
+export async function updateMyProfile(input: { fullName: string; phone: string }): Promise<void> {
+  const supabase = createClient();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { error } = await (supabase.rpc as any)('update_my_profile', {
+    p_full_name: input.fullName,
+    p_phone: input.phone || null,
+  });
+  if (error) throw error;
+}
+
+export async function getMyClinic(): Promise<{ id: string; name: string; cnpj: string; phone: string; email: string; address: string } | null> {
+  const supabase = createClient();
+  const { data: auth } = await supabase.auth.getUser();
+  if (!auth.user) return null;
+  const { data: prof } = await supabase.from('profiles').select('clinic_id').eq('id', auth.user.id).maybeSingle();
+  const clinicId = (prof as any)?.clinic_id;
+  if (!clinicId) return null;
+  const { data } = await supabase.from('clinics').select('id, name, cnpj, phone, email, address').eq('id', clinicId).maybeSingle();
+  if (!data) return null;
+  const c = data as any;
+  return {
+    id: c.id,
+    name: c.name ?? '',
+    cnpj: c.cnpj ?? '',
+    phone: c.phone ?? '',
+    email: c.email ?? '',
+    address: c.address ?? '',
+  };
+}
+
+export async function updateMyClinic(input: {
+  name: string;
+  cnpj: string;
+  phone: string;
+  email: string;
+  address: string;
+}): Promise<void> {
+  const supabase = createClient();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { error } = await (supabase.rpc as any)('update_my_clinic', {
+    p_name: input.name,
+    p_cnpj: input.cnpj || null,
+    p_phone: input.phone || null,
+    p_email: input.email || null,
+    p_address: input.address || null,
+  });
+  if (error) throw error;
+}
+
+// Cria um usuário de sistema (Admin geral ou Profissional em clínica existente).
+// Profissional em NOVA clínica usa provisionClinic().
+export async function createUser(input: {
+  name: string;
+  email: string;
+  type: 'admin' | 'professional';
+  clinicId?: string;
+}): Promise<{ emailed: boolean; tempPassword?: string }> {
+  const supabase = createClient();
+  const { data, error } = await supabase.functions.invoke('create-user', { body: input });
+  const bodyError = (data as { error?: string } | null)?.error;
+  if (error || bodyError) throw new Error(bodyError ?? 'Não foi possível criar o usuário.');
+  const d = data as { emailed?: boolean; tempPassword?: string };
+  return { emailed: !!d.emailed, tempPassword: d.tempPassword };
+}
+
+// Perfil do usuário logado (para decidir o que ele pode gerenciar).
+// isSuperadmin = admin geral do SaaS (vê/gerencia todas as clínicas).
+export async function getCurrentProfile(): Promise<{ id: string; jobTitle: string | null; isAdmin: boolean; isSuperadmin: boolean } | null> {
+  const supabase = createClient();
+  const { data: auth } = await supabase.auth.getUser();
+  if (!auth.user) return null;
+  const { data } = await supabase.from('profiles').select('job_title, is_superadmin').eq('id', auth.user.id).maybeSingle();
   const jobTitle = (data as any)?.job_title ?? null;
-  return { id: auth.user.id, jobTitle, isAdmin: jobTitle === 'Administrador' };
+  const isSuperadmin = (data as any)?.is_superadmin === true;
+  return { id: auth.user.id, jobTitle, isAdmin: jobTitle === 'Administrador', isSuperadmin };
 }
 
 // Edita nome e/ou permissão de um membro (Edge Function, só admin).
@@ -512,6 +616,52 @@ export async function createTeamMember(input: {
   return { emailed: !!d.emailed, tempPassword: d.tempPassword };
 }
 
+// ---------- clínicas (admin geral) ----------
+export interface ClinicRow {
+  id: string;
+  name: string;
+  plan: string;
+  createdAt: string;
+  patientCount: number;
+}
+
+// Lista de clínicas. Super-admin vê todas; médico vê só a própria (via RLS).
+export async function getClinics(): Promise<ClinicRow[]> {
+  const supabase = createClient();
+  const [{ data: clinics, error }, { data: pats }] = await Promise.all([
+    supabase.from('clinics').select('id, name, plan, created_at').order('created_at'),
+    supabase.from('patients').select('clinic_id'),
+  ]);
+  if (error) throw error;
+  const counts = new Map<string, number>();
+  (pats ?? []).forEach((p: any) => counts.set(p.clinic_id, (counts.get(p.clinic_id) ?? 0) + 1));
+  return (clinics ?? []).map((c: any) => ({
+    id: c.id,
+    name: c.name,
+    plan: c.plan,
+    createdAt: c.created_at,
+    patientCount: counts.get(c.id) ?? 0,
+  }));
+}
+
+// Onboarding: cria nova clínica + profissional (Edge Function, só admin geral).
+export async function provisionClinic(input: {
+  clinicName: string;
+  professionalName: string;
+  email: string;
+  plan?: string;
+  specialty?: string;
+  crm?: string;
+  phone?: string;
+}): Promise<{ clinicId: string; emailed: boolean; tempPassword?: string }> {
+  const supabase = createClient();
+  const { data, error } = await supabase.functions.invoke('provision-clinic', { body: input });
+  const bodyError = (data as { error?: string } | null)?.error;
+  if (error || bodyError) throw new Error(bodyError ?? 'Não foi possível cadastrar a clínica.');
+  const d = data as { clinicId: string; emailed?: boolean; tempPassword?: string };
+  return { clinicId: d.clinicId, emailed: !!d.emailed, tempPassword: d.tempPassword };
+}
+
 export async function getCannedResponses(): Promise<CannedResponse[]> {
   const supabase = createClient();
   const { data, error } = await supabase.from('canned_responses').select('*').order('title');
@@ -544,14 +694,21 @@ export async function getReportStats(): Promise<{
 
 export async function getClinicInfo(): Promise<ClinicInfo | null> {
   const supabase = createClient();
-  const { data, error } = await supabase.from('clinics').select('*').maybeSingle();
+  // Escopo à clínica do próprio usuário (super-admin vê várias — não usar maybeSingle solto).
+  const { data: auth } = await supabase.auth.getUser();
+  if (!auth.user) return null;
+  const { data: prof } = await supabase.from('profiles').select('clinic_id').eq('id', auth.user.id).maybeSingle();
+  const clinicId = (prof as any)?.clinic_id;
+  if (!clinicId) return null;
+  const { data, error } = await supabase.from('clinics').select('*').eq('id', clinicId).maybeSingle();
   if (error) throw error;
   if (!data) return null;
   const c = data as any;
   const { count } = await supabase
     .from('patients')
     .select('id', { count: 'exact', head: true })
-    .eq('status', 'active');
+    .eq('status', 'active')
+    .eq('clinic_id', clinicId);
   return {
     id: c.id,
     name: c.name,

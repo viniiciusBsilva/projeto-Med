@@ -26,6 +26,8 @@ export interface Patient {
   currentDay: number;
   protocolId: string;
   lastUpdate: string;
+  clinicId?: string;
+  clinicName?: string;
 }
 
 export interface Protocol {
@@ -97,9 +99,10 @@ export interface User {
   id: string;
   name: string;
   email: string;
-  role: string;
+  role: string; // rótulo do tipo: 'Admin geral' | 'Profissional'
   active: boolean;
   lastAccess: string;
+  clinicName?: string;
 }
 
 export interface CannedResponse {

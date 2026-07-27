@@ -10,7 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { StatusBadge, RiskBadge } from '@/components/status-badges';
 import type { Patient, PatientStatus } from '@/lib/types';
-import { getPatients } from '@/lib/queries';
+import { getPatients, getCurrentProfile } from '@/lib/queries';
 import { cn } from '@/lib/utils';
 
 const filters: { label: string; value: PatientStatus | 'all'; icon: React.ElementType }[] = [
@@ -25,11 +25,13 @@ export default function PatientsPage() {
   const [activeFilter, setActiveFilter] = React.useState<PatientStatus | 'all'>('all');
   const [patients, setPatients] = React.useState<Patient[]>([]);
   const [loading, setLoading] = React.useState(true);
+  const [isSuperadmin, setIsSuperadmin] = React.useState(false);
 
   React.useEffect(() => {
     getPatients()
       .then(setPatients)
       .finally(() => setLoading(false));
+    getCurrentProfile().then((p) => setIsSuperadmin(!!p?.isSuperadmin)).catch(() => {});
   }, []);
 
   const filtered = patients.filter((p) => {
@@ -146,6 +148,11 @@ export default function PatientsPage() {
                     <div className="flex items-center gap-2">
                       <p className="truncate font-medium">{patient.name}</p>
                       <StatusBadge status={patient.status} />
+                      {isSuperadmin && patient.clinicName && (
+                        <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                          {patient.clinicName}
+                        </span>
+                      )}
                     </div>
                     <p className="mt-0.5 truncate text-sm text-muted-foreground">
                       {patient.surgeryType} · {patient.doctor} · Dia {patient.currentDay}
