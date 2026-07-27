@@ -1,0 +1,7 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "echo 'sem npm install (projeto Flutter)'",
+  "buildCommand": "if cd flutter; then git pull && cd ..; else git clone https://github.com/flutter/flutter.git --depth 1 -b stable; fi && flutter/bin/flutter config --enable-web && flutter/bin/flutter build web --release",
+  "outputDirectory": "build/web"
+}
