@@ -26,7 +26,11 @@ import type { CalendarEvent, Patient, Doctor } from '@/lib/types';
 import { getCalendarEvents, getPatients, getDoctors, createAppointment } from '@/lib/queries';
 import { cn } from '@/lib/utils';
 
-const todayIso = new Date().toISOString().slice(0, 10);
+// Data local no formato YYYY-MM-DD (evita o off-by-one do toISOString(), que usa UTC).
+function toDateStr(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+const todayIso = toDateStr(new Date());
 
 const monthNames = [
   'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
@@ -56,6 +60,9 @@ export default function CalendarPage() {
   const [apTitle, setApTitle] = React.useState('');
   const [apDate, setApDate] = React.useState(selectedDate ?? todayIso);
   const [apTime, setApTime] = React.useState('09:00');
+  const [apPhase, setApPhase] = React.useState<'none' | 'preop' | 'postop'>('none');
+  const [apPhaseStart, setApPhaseStart] = React.useState(selectedDate ?? todayIso);
+  const [apPhaseEnd, setApPhaseEnd] = React.useState('');
   const [apSubmitting, setApSubmitting] = React.useState(false);
   const [apError, setApError] = React.useState<string | null>(null);
 
@@ -76,6 +83,16 @@ export default function CalendarPage() {
       setApError('Selecione o paciente e o médico.');
       return;
     }
+    if (apPhase !== 'none') {
+      if (!apPhaseStart || !apPhaseEnd) {
+        setApError('Informe o período (início e fim) da fase.');
+        return;
+      }
+      if (apPhaseEnd < apPhaseStart) {
+        setApError('O fim da fase deve ser igual ou após o início.');
+        return;
+      }
+    }
     const patientName = patients.find((p) => p.id === apPatient)?.name ?? 'Paciente';
     const title = apTitle.trim() || `${apType === 'return' ? 'Retorno' : 'Consulta'} - ${patientName}`;
     setApSubmitting(true);
@@ -86,11 +103,15 @@ export default function CalendarPage() {
         title,
         type: apType,
         scheduledAt: new Date(`${apDate}T${apTime}:00`).toISOString(),
+        phase: apPhase === 'none' ? null : apPhase,
+        phaseStart: apPhase === 'none' ? null : apPhaseStart,
+        phaseEnd: apPhase === 'none' ? null : apPhaseEnd,
       });
       setOpen(false);
       setApPatient('');
       setApDoctor('');
       setApTitle('');
+      setApPhase('none');
       refreshEvents();
     } catch (err) {
       setApError(err instanceof Error ? err.message : 'Erro ao agendar.');
@@ -121,7 +142,14 @@ export default function CalendarPage() {
   return (
     <div className="space-y-6">
       <PageHeader title="Agenda" description="Retornos, consultas, cirurgias e alertas">
-        <Dialog open={open} onOpenChange={setOpen}>
+        <Dialog
+          open={open}
+          onOpenChange={(o) => {
+            setOpen(o);
+            // Ao abrir, o campo de data assume o dia selecionado no calendário (não o "hoje" do mount).
+            if (o) setApDate(selectedDate ?? todayIso);
+          }}
+        >
           <DialogTrigger asChild>
             <Button size="sm">
               <Plus className="mr-1.5 h-4 w-4" />
@@ -190,6 +218,61 @@ export default function CalendarPage() {
                   <Input id="ap-time" type="time" value={apTime} onChange={(e) => setApTime(e.target.value)} required />
                 </div>
               </div>
+              <div className="space-y-2">
+                <Label htmlFor="ap-phase">Fase (opcional)</Label>
+                <Select
+                  value={apPhase}
+                  onValueChange={(v) => {
+                    const p = v as 'none' | 'preop' | 'postop';
+                    setApPhase(p);
+                    if (p !== 'none' && !apPhaseEnd) {
+                      const start = apDate || todayIso;
+                      setApPhaseStart(start);
+                      const d = new Date(`${start}T00:00:00`);
+                      d.setDate(d.getDate() + 30);
+                      setApPhaseEnd(toDateStr(d));
+                    }
+                  }}
+                >
+                  <SelectTrigger id="ap-phase">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Nenhuma</SelectItem>
+                    <SelectItem value="preop">Pré-operatório</SelectItem>
+                    <SelectItem value="postop">Pós-operatório</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {apPhase !== 'none' && (
+                <div className="space-y-2">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-2">
+                      <Label htmlFor="ap-phase-start">Início da fase</Label>
+                      <Input
+                        id="ap-phase-start"
+                        type="date"
+                        value={apPhaseStart}
+                        onChange={(e) => setApPhaseStart(e.target.value)}
+                        required
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="ap-phase-end">Fim da fase</Label>
+                      <Input
+                        id="ap-phase-end"
+                        type="date"
+                        value={apPhaseEnd}
+                        onChange={(e) => setApPhaseEnd(e.target.value)}
+                        required
+                      />
+                    </div>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Durante o período, o paciente recebe um lembrete diário do checklist no app.
+                  </p>
+                </div>
+              )}
               <div className="space-y-2">
                 <Label htmlFor="ap-title">Título (opcional)</Label>
                 <Input

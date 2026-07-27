@@ -18,6 +18,20 @@ import type {
 } from '@/lib/types';
 
 // ---------- helpers ----------
+// clinic_id do usuário logado. Filtra pelo próprio id: a RLS de profiles deixa o
+// staff enxergar todos os perfis da clínica, então sem o filtro o .maybeSingle()
+// recebe várias linhas e falha (retornando null como se não houvesse clínica).
+async function currentClinicId(supabase: ReturnType<typeof createClient>): Promise<string | null> {
+  const { data: auth } = await supabase.auth.getUser();
+  if (!auth.user) return null;
+  const { data } = await supabase
+    .from('profiles')
+    .select('clinic_id')
+    .eq('id', auth.user.id)
+    .maybeSingle();
+  return (data as any)?.clinic_id ?? null;
+}
+
 export function relativeTime(iso: string | null): string {
   if (!iso) return '—';
   const diff = Date.now() - new Date(iso).getTime();
@@ -32,6 +46,13 @@ export function relativeTime(iso: string | null): string {
 
 function timeOf(iso: string): string {
   return new Date(iso).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+}
+
+// Data local no formato YYYY-MM-DD. Usa o mesmo fuso de timeOf (local), evitando o
+// off-by-one de fatiar o UTC direto do timestamp (ex.: 22:00 BRT virava o dia seguinte).
+function dateOf(iso: string): string {
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 function mapStatus(patientStatus: string, openAlerts: number): PatientStatus {
@@ -144,8 +165,7 @@ export interface NewPatientInput {
 
 export async function createPatient(input: NewPatientInput): Promise<string> {
   const supabase = createClient();
-  const { data: prof } = await supabase.from('profiles').select('clinic_id').maybeSingle();
-  const clinicId = (prof as any)?.clinic_id;
+  const clinicId = await currentClinicId(supabase);
   if (!clinicId) throw new Error('Clínica do usuário não encontrada.');
 
   const { data: patient, error } = await supabase
@@ -235,13 +255,13 @@ export async function getDashboardMetrics(): Promise<DashboardMetrics> {
   ]);
 
   const rows = (overview.data ?? []) as any[];
-  const today = new Date().toISOString().slice(0, 10);
+  const today = dateOf(new Date().toISOString());
 
   return {
     activePatients: rows.filter((r) => r.patient_status === 'active').length,
     alertPatients: rows.filter((r) => Number(r.open_alerts ?? 0) > 0).length,
     finishedPatients: rows.filter((r) => r.patient_status === 'finished').length,
-    todayAppointments: (appts.data ?? []).filter((a: any) => String(a.scheduled_at).slice(0, 10) === today).length,
+    todayAppointments: (appts.data ?? []).filter((a: any) => dateOf(a.scheduled_at) === today).length,
     pendingMessages: (msgs.data ?? []).filter((m: any) => m.sender === 'patient' && !m.read).length,
   };
 }
@@ -295,7 +315,7 @@ function apptToEvent(a: any): CalendarEvent {
   return {
     id: a.id,
     title: a.title,
-    date: String(a.scheduled_at).slice(0, 10),
+    date: dateOf(a.scheduled_at),
     time: timeOf(a.scheduled_at),
     type: a.type,
     doctor: a.professional ?? '',
@@ -387,8 +407,7 @@ export async function sendMessage(
   attachment?: { path: string; type: 'image' | 'pdf' | 'video' | 'audio'; name: string },
 ): Promise<void> {
   const supabase = createClient();
-  const { data: prof } = await supabase.from('profiles').select('clinic_id').maybeSingle();
-  const clinicId = (prof as any)?.clinic_id;
+  const clinicId = await currentClinicId(supabase);
   const { error } = await supabase.from('messages').insert({
     patient_id: patientId,
     clinic_id: clinicId,
@@ -575,8 +594,7 @@ export interface DoctorInput {
 
 export async function createDoctor(input: DoctorInput): Promise<void> {
   const supabase = createClient();
-  const { data: prof } = await supabase.from('profiles').select('clinic_id').maybeSingle();
-  const clinicId = (prof as any)?.clinic_id;
+  const clinicId = await currentClinicId(supabase);
   if (!clinicId) throw new Error('Clínica do usuário não encontrada.');
   const { error } = await supabase.from('doctors').insert({
     clinic_id: clinicId,
@@ -617,15 +635,18 @@ export async function createAppointment(input: {
   title: string;
   type: 'return' | 'consultation';
   scheduledAt: string; // ISO
+  phase?: 'preop' | 'postop' | null;
+  phaseStart?: string | null; // YYYY-MM-DD
+  phaseEnd?: string | null; // YYYY-MM-DD
 }): Promise<void> {
   const supabase = createClient();
-  const { data: prof } = await supabase.from('profiles').select('clinic_id').maybeSingle();
-  const clinicId = (prof as any)?.clinic_id;
+  const clinicId = await currentClinicId(supabase);
   if (!clinicId) throw new Error('Clínica do usuário não encontrada.');
 
   const { data: doctor } = await supabase.from('doctors').select('full_name').eq('id', input.doctorId).maybeSingle();
   const professional = (doctor as any)?.full_name ?? null;
 
+  const phase = input.phase ?? null;
   const { error } = await supabase.from('appointments').insert({
     clinic_id: clinicId,
     patient_id: input.patientId,
@@ -634,6 +655,10 @@ export async function createAppointment(input: {
     title: input.title.trim(),
     type: input.type,
     scheduled_at: input.scheduledAt,
+    // Fase de cuidado (pré/pós-operatório) e janela para os lembretes diários.
+    phase,
+    phase_start: phase ? input.phaseStart ?? null : null,
+    phase_end: phase ? input.phaseEnd ?? null : null,
   } as any);
   if (error) throw error;
 }

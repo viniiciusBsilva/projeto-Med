@@ -43,3 +43,6 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Chaves locais do Supabase (públicas, mas fora do versionamento — ver dart_define.example.json)
+dart_define.json
