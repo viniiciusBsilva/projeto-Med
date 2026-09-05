@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
-import { createClient } from '@/lib/supabase/client';
+import { createClient, isSupabaseConfigured } from '@/lib/supabase/client';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -79,6 +79,22 @@ export default function LoginPage() {
               Acesse o sistema de acompanhamento pós-operatório
             </p>
           </div>
+
+          {/* Sem as env públicas o login não tem como funcionar. Dizer isso é
+              melhor do que oferecer um formulário que sempre falha. */}
+          {!isSupabaseConfigured && (
+            <div className="mb-5 flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <div>
+                <p className="font-medium">Aplicação não configurada</p>
+                <p className="mt-0.5 text-destructive/80">
+                  Faltam <code>NEXT_PUBLIC_SUPABASE_URL</code> e{' '}
+                  <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code> nas variáveis de ambiente do deploy.
+                  Elas são embutidas durante o build — depois de configurar, é preciso publicar de novo.
+                </p>
+              </div>
+            </div>
+          )}
 
           <form onSubmit={handleSubmit} className="space-y-5">
             <div className="space-y-2">

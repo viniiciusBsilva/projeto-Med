@@ -18,9 +18,17 @@ const PROTECTED_PREFIXES = [
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({ request: { headers: request.headers } });
 
+  // Deploy sem as variáveis públicas (env não configurada na Netlify/Vercel):
+  // o middleware roda em TODA requisição, e criar o client aqui lançava e
+  // devolvia 500 em todas as páginas. Sem configuração não há sessão para
+  // validar — deixa passar e a tela de login exibe o aviso de configuração.
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !anonKey) return response;
+
   const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    url,
+    anonKey,
     {
       cookies: {
         get(name: string) {
