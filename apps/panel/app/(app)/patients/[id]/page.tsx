@@ -31,7 +31,8 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { StatusBadge, RiskBadge, TimelineStatusBadge } from '@/components/status-badges';
 import type { Patient, Protocol, TimelineStep } from '@/lib/types';
-import { getPatient, getPatientTimeline, getProtocols } from '@/lib/queries';
+import { getPatient, getPatientTimeline, getProtocols, updateProcedureDate } from '@/lib/queries';
+import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 
 export default function PatientDetailPage() {
@@ -42,15 +43,21 @@ export default function PatientDetailPage() {
   const [protocol, setProtocol] = React.useState<Protocol | undefined>(undefined);
   const [loading, setLoading] = React.useState(true);
 
+  const reload = React.useCallback(
+    () =>
+      Promise.all([getPatient(id), getPatientTimeline(id), getProtocols()]).then(
+        ([p, steps, protocols]) => {
+          setPatient(p);
+          setTimelineSteps(steps);
+          if (p) setProtocol(protocols.find((pr) => pr.id === p.protocolId));
+        },
+      ),
+    [id],
+  );
+
   React.useEffect(() => {
-    Promise.all([getPatient(id), getPatientTimeline(id), getProtocols()])
-      .then(([p, steps, protocols]) => {
-        setPatient(p);
-        setTimelineSteps(steps);
-        if (p) setProtocol(protocols.find((pr) => pr.id === p.protocolId));
-      })
-      .finally(() => setLoading(false));
-  }, [id]);
+    reload().finally(() => setLoading(false));
+  }, [reload]);
 
   if (loading) {
     return <div className="py-16 text-center text-sm text-muted-foreground">Carregando paciente...</div>;
@@ -121,11 +128,14 @@ export default function PatientDetailPage() {
               </div>
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                <InfoItem icon={Calendar} label="Data da cirurgia" value={patient.surgeryDate ? new Date(patient.surgeryDate).toLocaleDateString('pt-BR') : '—'} />
-                <InfoItem icon={Stethoscope} label="Tipo de cirurgia" value={patient.surgeryType} />
-                <InfoItem icon={Hospital} label="Hospital" value={patient.hospital} />
+                {/* Editável: é a âncora de todo o D+n. Remarcar o procedimento
+                    regenera os disparos pendentes pelo trigger do banco. */}
+                <ProcedureDateItem
+                  patientId={patient.id}
+                  value={patient.surgeryDate}
+                  onSaved={reload}
+                />
                 <InfoItem icon={User} label="Médico responsável" value={patient.doctor} />
-                <InfoItem icon={Users} label="Equipe" value={patient.team} />
                 <InfoItem icon={Phone} label="Telefone" value={patient.phone} />
                 <InfoItem icon={Mail} label="Email" value={patient.email} />
                 <InfoItem icon={MapPin} label="Endereço" value={patient.address} />
@@ -158,9 +168,8 @@ export default function PatientDetailPage() {
       </Card>
 
       <Tabs defaultValue="timeline">
-        <TabsList className="grid w-full grid-cols-2 md:w-auto md:grid-cols-4">
+        <TabsList className="grid w-full grid-cols-3 md:w-auto">
           <TabsTrigger value="timeline">Linha do Tempo</TabsTrigger>
-          <TabsTrigger value="questionnaire">Questionário</TabsTrigger>
           <TabsTrigger value="photos">Fotos</TabsTrigger>
           <TabsTrigger value="ai">Análise IA</TabsTrigger>
         </TabsList>
@@ -298,53 +307,6 @@ export default function PatientDetailPage() {
           </Card>
         </TabsContent>
 
-        {/* Questionnaire Tab */}
-        <TabsContent value="questionnaire" className="mt-4">
-          <Card>
-            <CardHeader className="pb-4">
-              <CardTitle className="text-base font-semibold">Questionário inteligente — Dia {patient.currentDay}</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {protocol?.questions.map((q, i) => (
-                <div key={i} className="rounded-xl border p-4">
-                  <p className="text-sm font-medium">{i + 1}. {q}</p>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {i === 0 ? (
-                      <div className="flex items-center gap-2">
-                        {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
-                          <button
-                            key={n}
-                            className={cn(
-                              'h-9 w-9 rounded-lg border text-sm font-medium transition-all',
-                              n === 7
-                                ? 'border-destructive bg-destructive/10 text-destructive'
-                                : 'hover:border-primary hover:bg-primary/5'
-                            )}
-                          >
-                            {n}
-                          </button>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="flex gap-2">
-                        <button className="rounded-lg border border-success bg-success/10 px-4 py-2 text-sm font-medium text-success transition-all hover:bg-success/20">
-                          Sim
-                        </button>
-                        <button className="rounded-lg border px-4 py-2 text-sm font-medium transition-all hover:bg-accent">
-                          Não
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-              <Button className="w-full">
-                <Send className="mr-2 h-4 w-4" />
-                Enviar respostas
-              </Button>
-            </CardContent>
-          </Card>
-        </TabsContent>
 
         {/* Photos Tab */}
         <TabsContent value="photos" className="mt-4">
@@ -447,6 +409,81 @@ export default function PatientDetailPage() {
           </Card>
         </TabsContent>
       </Tabs>
+    </div>
+  );
+}
+
+/**
+ * Data do procedimento — editável.
+ *
+ * Não é um campo qualquer: é a âncora de todo o D+n. Salvar dispara o trigger
+ * `trg_surgery_protocol_schedule`, que recalcula os disparos ainda não enviados.
+ * Remarcar cirurgia é rotina, e antes não havia como fazer isso pelo painel.
+ */
+function ProcedureDateItem({
+  patientId,
+  value,
+  onSaved,
+}: {
+  patientId: string;
+  value: string;
+  onSaved: () => Promise<unknown>;
+}) {
+  const [editing, setEditing] = React.useState(false);
+  const [date, setDate] = React.useState(value ? value.slice(0, 10) : '');
+  const [saving, setSaving] = React.useState(false);
+
+  const save = async () => {
+    if (!date) return;
+    setSaving(true);
+    try {
+      await updateProcedureDate(patientId, date);
+      await onSaved();
+      setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="flex items-start gap-2.5">
+      <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-muted">
+        <Calendar className="h-4 w-4 text-muted-foreground" style={{ width: 16, height: 16 }} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="text-xs text-muted-foreground">Data do procedimento</p>
+        {editing ? (
+          <div className="mt-1 flex items-center gap-1.5">
+            <Input
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              className="h-8 w-36"
+            />
+            <Button size="sm" className="h-8" onClick={save} disabled={saving || !date}>
+              Salvar
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-8"
+              onClick={() => {
+                setDate(value ? value.slice(0, 10) : '');
+                setEditing(false);
+              }}
+            >
+              Cancelar
+            </Button>
+          </div>
+        ) : (
+          <button
+            onClick={() => setEditing(true)}
+            className="truncate text-sm font-medium underline-offset-2 hover:underline"
+          >
+            {value ? new Date(value).toLocaleDateString('pt-BR') : 'Definir data'}
+          </button>
+        )}
+      </div>
     </div>
   );
 }

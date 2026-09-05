@@ -1,7 +1,17 @@
 'use client';
 
 import * as React from 'react';
-import { Users, Stethoscope, User, Plus, MoreVertical, KeyRound } from 'lucide-react';
+import {
+  Users,
+  User,
+  Plus,
+  MoreVertical,
+  KeyRound,
+  HelpCircle,
+  Pencil,
+  Trash2,
+  Save,
+} from 'lucide-react';
 import { PageHeader } from '@/components/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -11,6 +21,7 @@ import { Switch } from '@/components/ui/switch';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Textarea } from '@/components/ui/textarea';
 import {
   Dialog,
   DialogContent,
@@ -31,8 +42,12 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import type { User as UserType } from '@/lib/types';
+import type { User as UserType, CannedResponse } from '@/lib/types';
 import {
+  getCannedResponses,
+  createFaqEntry,
+  updateFaqEntry,
+  deleteFaqEntry,
   getTeam,
   getCurrentProfile,
   updateTeamMember,
@@ -64,6 +79,7 @@ export default function SettingsPage() {
   const [clPhone, setClPhone] = React.useState('');
   const [clEmail, setClEmail] = React.useState('');
   const [clAddress, setClAddress] = React.useState('');
+  const [clInvite, setClInvite] = React.useState('');
   const [savingClinic, setSavingClinic] = React.useState(false);
   const [clinicMsg, setClinicMsg] = React.useState<string | null>(null);
 
@@ -108,6 +124,7 @@ export default function SettingsPage() {
       setClPhone(c.phone);
       setClEmail(c.email);
       setClAddress(c.address);
+      setClInvite(c.inviteCode);
     }).catch(() => {});
     getCurrentProfile().then((p) => {
       if (!p) return;
@@ -257,17 +274,16 @@ export default function SettingsPage() {
             <User className="h-3.5 w-3.5" style={{ width: 14, height: 14 }} />
             <span className="hidden sm:inline">Meu perfil</span>
           </TabsTrigger>
+          {/* FAQ é do médico, não do admin: é o que o assistente responde. */}
+          <TabsTrigger value="faq" className="gap-1.5">
+            <HelpCircle className="h-3.5 w-3.5" style={{ width: 14, height: 14 }} />
+            <span className="hidden sm:inline">FAQ do assistente</span>
+          </TabsTrigger>
           {me?.isSuperadmin && (
-            <>
-              <TabsTrigger value="users" className="gap-1.5">
-                <Users className="h-3.5 w-3.5" style={{ width: 14, height: 14 }} />
-                <span className="hidden sm:inline">Usuários</span>
-              </TabsTrigger>
-              <TabsTrigger value="protocols" className="gap-1.5">
-                <Stethoscope className="h-3.5 w-3.5" style={{ width: 14, height: 14 }} />
-                <span className="hidden sm:inline">Protocolos</span>
-              </TabsTrigger>
-            </>
+            <TabsTrigger value="users" className="gap-1.5">
+              <Users className="h-3.5 w-3.5" style={{ width: 14, height: 14 }} />
+              <span className="hidden sm:inline">Usuários</span>
+            </TabsTrigger>
           )}
         </TabsList>
 
@@ -317,6 +333,13 @@ export default function SettingsPage() {
               </CardHeader>
               <CardContent>
                 <form onSubmit={handleSaveClinic} className="space-y-5">
+                  <div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
+                    <p className="text-xs font-medium text-muted-foreground">Código de convite da clínica</p>
+                    <p className="mt-1 select-all font-mono text-2xl font-bold tracking-widest text-primary">{clInvite || '—'}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Compartilhe com seus pacientes — eles informam este código no cadastro do app para entrar na sua clínica.
+                    </p>
+                  </div>
                   <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                     <div className="space-y-2">
                       <Label htmlFor="cl-name">Nome da clínica</Label>
@@ -514,32 +537,9 @@ export default function SettingsPage() {
           </TabsContent>
         )}
 
-        {/* Protocolos (admin geral) */}
-        {me?.isSuperadmin && (
-          <TabsContent value="protocols" className="mt-4">
-            <Card>
-              <CardHeader className="pb-4">
-                <CardTitle className="text-base font-semibold">Configurações de protocolos</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                {[
-                  ['Questionários automáticos', 'Enviar questionários nos dias definidos do protocolo'],
-                  ['Lembrete de fotos', 'Solicitar fotos obrigatórias automaticamente'],
-                  ['Alertas de não resposta', 'Notificar quando paciente não responde em 24h'],
-                  ['IA de análise de evolução', 'Gerar resumos automáticos com inteligência artificial'],
-                ].map(([title, desc]) => (
-                  <div key={title} className="flex items-center justify-between rounded-xl border p-4">
-                    <div>
-                      <p className="text-sm font-medium">{title}</p>
-                      <p className="text-xs text-muted-foreground">{desc}</p>
-                    </div>
-                    <Switch defaultChecked />
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-          </TabsContent>
-        )}
+        <TabsContent value="faq" className="mt-4">
+          <FaqTab />
+        </TabsContent>
       </Tabs>
 
       {/* Modal de edição de nome */}
@@ -565,6 +565,183 @@ export default function SettingsPage() {
           </form>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+// ===========================================================================
+// FAQ do assistente
+// ===========================================================================
+// Base de conhecimento do agente no WhatsApp: a tool `search_faq` lê daqui.
+// Sem correspondência, a IA é instruída a encaminhar para a equipe em vez de
+// responder por conta própria — então FAQ vazio significa assistente mudo.
+
+// Tamanho aproximado do bloco fixo que vai em toda chamada (ferramentas +
+// instruções), medido no código do agente. O Haiku 4.5 só ativa o desconto de
+// prompt caching a partir de 4.096 tokens de prefixo.
+const BASE_PROMPT_TOKENS = 2000;
+const CACHE_MIN_TOKENS = 4096;
+const CHARS_PER_TOKEN = 3.5;
+
+function FaqTab() {
+  const [entries, setEntries] = React.useState<CannedResponse[]>([]);
+  const [loading, setLoading] = React.useState(true);
+  const [editing, setEditing] = React.useState<string | null>(null);
+  const [title, setTitle] = React.useState('');
+  const [body, setBody] = React.useState('');
+  const [saving, setSaving] = React.useState(false);
+
+  const load = React.useCallback(
+    () => getCannedResponses().then(setEntries).catch(() => {}),
+    [],
+  );
+
+  React.useEffect(() => {
+    load().finally(() => setLoading(false));
+  }, [load]);
+
+  const reset = () => {
+    setEditing(null);
+    setTitle('');
+    setBody('');
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!title.trim() || !body.trim()) return;
+    setSaving(true);
+    try {
+      if (editing) await updateFaqEntry(editing, title.trim(), body.trim());
+      else await createFaqEntry(title.trim(), body.trim());
+      await load();
+      reset();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    await deleteFaqEntry(id);
+    await load();
+    if (editing === id) reset();
+  };
+
+  const faqTokens = Math.round(
+    entries.reduce((n, e) => n + e.title.length + e.body.length, 0) / CHARS_PER_TOKEN,
+  );
+  const prefixTokens = BASE_PROMPT_TOKENS + faqTokens;
+  const cacheActive = prefixTokens >= CACHE_MIN_TOKENS;
+  const pct = Math.min(100, Math.round((prefixTokens / CACHE_MIN_TOKENS) * 100));
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader className="pb-4">
+          <CardTitle className="text-base font-semibold">
+            {editing ? 'Editar resposta' : 'Nova resposta aprovada'}
+          </CardTitle>
+          <p className="text-xs text-muted-foreground">
+            O assistente só responde dúvidas clínicas com o texto cadastrado aqui. Sem resposta
+            correspondente, ele encaminha para a equipe.
+          </p>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={handleSubmit} className="space-y-3">
+            <div className="space-y-2">
+              <Label htmlFor="faq-title">Pergunta</Label>
+              <Input
+                id="faq-title"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="Ex: Quando posso lavar o cabelo?"
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="faq-body">Resposta aprovada</Label>
+              <Textarea
+                id="faq-body"
+                value={body}
+                onChange={(e) => setBody(e.target.value)}
+                placeholder="Texto que o paciente vai receber, com as palavras do médico."
+                className="min-h-[90px]"
+                required
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              {editing && (
+                <Button type="button" variant="outline" onClick={reset}>
+                  Cancelar
+                </Button>
+              )}
+              <Button type="submit" disabled={saving}>
+                <Save className="mr-1.5 h-4 w-4" style={{ width: 16, height: 16 }} />
+                {saving ? 'Salvando...' : editing ? 'Salvar' : 'Adicionar'}
+              </Button>
+            </div>
+          </form>
+        </CardContent>
+      </Card>
+
+      {/* Escrever FAQ melhora a resposta E derruba o custo por mensagem. */}
+      <Card>
+        <CardContent className="space-y-2 p-4">
+          <div className="flex items-center justify-between text-sm">
+            <span className="font-medium">Desconto de custo por repetição</span>
+            <span className={cacheActive ? 'text-success' : 'text-muted-foreground'}>
+              {cacheActive ? 'ativo' : `${pct}% do mínimo`}
+            </span>
+          </div>
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+            <div
+              className={cacheActive ? 'h-full bg-success' : 'h-full bg-primary'}
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {cacheActive
+              ? 'O texto fixo enviado ao modelo já passou do mínimo, então o desconto de ~90% sobre a parte repetida está valendo.'
+              : `Faltam cerca de ${Math.max(0, CACHE_MIN_TOKENS - prefixTokens)} tokens (${entries.length} resposta(s) cadastrada(s)). Cada pergunta que você escreve aproxima o desconto de ~90% sobre a parte repetida de cada mensagem.`}
+          </p>
+        </CardContent>
+      </Card>
+
+      {loading && <p className="text-sm text-muted-foreground">Carregando…</p>}
+
+      <div className="space-y-2">
+        {entries.map((e) => (
+          <Card key={e.id}>
+            <CardContent className="flex items-start justify-between gap-3 p-4">
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium">{e.title}</p>
+                <p className="mt-0.5 text-sm text-muted-foreground">{e.body}</p>
+              </div>
+              <div className="flex shrink-0 gap-1">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => {
+                    setEditing(e.id);
+                    setTitle(e.title);
+                    setBody(e.body);
+                  }}
+                >
+                  <Pencil className="h-4 w-4" style={{ width: 16, height: 16 }} />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 text-destructive"
+                  onClick={() => handleDelete(e.id)}
+                >
+                  <Trash2 className="h-4 w-4" style={{ width: 16, height: 16 }} />
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
     </div>
   );
 }

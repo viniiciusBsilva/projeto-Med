@@ -34,7 +34,32 @@
       "Skill(artifact-design)",
       "Skill(artifact-design:*)",
       "Bash(command -v wkhtmltopdf weasyprint)",
-      "Bash(command -v npx)"
+      "Bash(command -v npx)",
+      "Bash(git branch *)",
+      "Bash(curl -s -o /tmp/inv.json -w 'HTTP %{http_code}\\\\n' https://ktfhmrgwbclewlwbqtag.supabase.co/functions/v1/patient-signup -H 'apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt0Zmhtcmd3YmNsZXdsd2JxdGFnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ1OTQzNTcsImV4cCI6MjEwMDE3MDM1N30.ZML2Cy0ATta-BZdNO151Jz17_-psdvIkGztpTbpPGvE' -H 'content-type: application/json' -d '{\"fullName\":\"Paciente X\",\"email\":\"pac.inv.tmp@example.com\",\"password\":\"senha12345\",\"clinicCode\":\"ZZZZZZ\"}')",
+      "Bash(curl -s https://ktfhmrgwbclewlwbqtag.supabase.co/functions/v1/patient-signup -H 'apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt0Zmhtcmd3YmNsZXdsd2JxdGFnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ1OTQzNTcsImV4cCI6MjEwMDE3MDM1N30.ZML2Cy0ATta-BZdNO151Jz17_-psdvIkGztpTbpPGvE' -H 'content-type: application/json' -d '{\"fullName\":\"Paciente Convite\",\"email\":\"pac.conv.tmp@example.com\",\"password\":\"senha12345\",\"clinicCode\":\"FCEEF3\"}')",
+      "Bash(sed -n '/export async function getDoctors/,/^}/p;/export async function createDoctor/,/^}/p;/export async function updateDoctor/,/^}/p' lib/queries.ts)",
+      "Bash(sed -n '/export interface Doctor/,/^}/p' lib/types.ts)",
+      "Bash(npx --yes deno@2.1.4 --version)",
+      "Bash(npx --yes deno@2.1.4 check --no-lock wa-webhook/index.ts wa-send/index.ts)",
+      "Bash(npx --yes deno@2.1.4 check --no-lock --node-modules-dir=auto wa-webhook/index.ts wa-send/index.ts)",
+      "Bash(grep -viE \"^.\\\\[0m.\\\\[32m\\(Download|Initialize\\)|^$\")",
+      "Bash(pnpm lint *)",
+      "Bash(npx --yes deno@2.1.4 lint --no-config _shared wa-webhook wa-send)",
+      "Bash(env)",
+      "Bash(curl -s -o /tmp/o1 -w '   HTTP %{http_code} ' https://ktfhmrgwbclewlwbqtag.supabase.co/functions/v1/wa-webhook?s=errado -X POST -H 'content-type: application/json' -d '{\"phone\":\"5511999999999\",\"messageId\":\"x\"}')",
+      "Bash(curl -s -o /tmp/o2 -w '   HTTP %{http_code} ' https://ktfhmrgwbclewlwbqtag.supabase.co/functions/v1/wa-webhook -X POST -H 'content-type: application/json' -d '{}')",
+      "Bash(curl -s -o /tmp/o3 -w '   HTTP %{http_code} ' https://ktfhmrgwbclewlwbqtag.supabase.co/functions/v1/wa-send -X POST -H 'content-type: application/json' -d '{\"patientId\":\"00000000-0000-0000-0000-000000000000\",\"body\":\"teste\"}')",
+      "mcp__claude_ai_Supabase__query_logs",
+      "Bash(awk '/^export const TOOL_DEFINITIONS/,/^\\\\] as const;/' _shared/tools.ts)",
+      "Bash(awk '/^  return `Você é o assistente/,/# FAQ aprovado/' _shared/agent.ts)",
+      "Bash(node md2html.mjs \"/Users/viniciusbarbosadasilva/Documents/Projeto Med/docs/CONTAS-EXTERNAS.md\" ./contas.html \"Contas externas: Z-API e Anthropic\")",
+      "Bash('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' --headless --disable-gpu --no-sandbox --no-pdf-header-footer '--print-to-pdf=/Users/viniciusbarbosadasilva/Documents/Projeto Med/docs/CONTAS-EXTERNAS.pdf' file://__TRACKED_VAR__/contas.html)",
+      "Bash('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' --headless --disable-gpu --no-sandbox --hide-scrollbars --window-size=794,1400 --screenshot=full.png --virtual-time-budget=3000 file://__TRACKED_VAR__/contas.html)",
+      "Bash(git rm *)"
+    ],
+    "additionalDirectories": [
+      "/Users/viniciusbarbosadasilva/Documents/takeme-keystores-entrega"
     ]
   }
 }

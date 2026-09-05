@@ -58,12 +58,16 @@ Deno.serve(async (req: Request) => {
 
   // 3) Valida entrada.
   let name = '', email = '', type = 'professional', clinicId = '';
+  let specialty = '', crm = '', phone = '';
   try {
     const b = await req.json();
     name = String(b.name ?? '').trim();
     email = String(b.email ?? '').trim().toLowerCase();
     type = String(b.type ?? 'professional').trim();
     clinicId = String(b.clinicId ?? '').trim();
+    specialty = String(b.specialty ?? '').trim();
+    crm = String(b.crm ?? '').trim();
+    phone = String(b.phone ?? '').trim();
   } catch {
     return json({ error: 'Corpo inválido.' }, 400);
   }
@@ -76,6 +80,11 @@ Deno.serve(async (req: Request) => {
   if (type === 'professional') {
     if (!clinicId) return json({ error: 'Selecione a clínica do profissional.' }, 400);
     targetClinic = clinicId;
+    // Já existe um médico com este e-mail? (cobre médicos sem login, ex.: seed)
+    const { data: existingDoc } = await admin.from('doctors').select('id').eq('email', email).limit(1);
+    if (existingDoc && existingDoc.length > 0) {
+      return json({ error: 'Já existe um médico com este e-mail.' }, 409);
+    }
   }
   const jobTitle = type === 'admin' ? 'Administrador' : 'Médico';
 
@@ -104,7 +113,9 @@ Deno.serve(async (req: Request) => {
     await admin.from('doctors').insert({
       clinic_id: targetClinic,
       full_name: name,
-      specialty: 'Transplante capilar',
+      specialty: specialty || 'Transplante capilar',
+      crm: crm || null,
+      phone: phone || null,
       email,
       active: true,
     });

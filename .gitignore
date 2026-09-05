@@ -40,3 +40,7 @@ pnpm-debug.log*
 .DS_Store
 .vercel
 /coverage
+
+# PDFs gerados a partir dos .md de docs/ (o .md é a fonte da verdade;
+# binário em git incha o histórico a cada regeração).
+docs/*.pdf

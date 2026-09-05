@@ -168,9 +168,17 @@ export default function ClinicsPage() {
                     <p className="text-xs capitalize text-muted-foreground">Plano {c.plan}</p>
                   </div>
                 </div>
-                <div className="mt-3 flex items-center gap-1.5 text-sm text-muted-foreground">
-                  <Users className="h-4 w-4" />
-                  {c.patientCount} paciente{c.patientCount === 1 ? '' : 's'}
+                <div className="mt-3 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                    <Users className="h-4 w-4" />
+                    {c.patientCount} paciente{c.patientCount === 1 ? '' : 's'}
+                  </div>
+                  <span
+                    className="select-all rounded-md bg-muted px-2 py-0.5 font-mono text-xs font-semibold tracking-wider"
+                    title="Código de convite da clínica"
+                  >
+                    {c.inviteCode}
+                  </span>
                 </div>
               </CardContent>
             </Card>

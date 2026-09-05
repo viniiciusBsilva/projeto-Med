@@ -6,6 +6,10 @@ import type {
   Protocol,
   TimelineStep,
   Message,
+  Conversation,
+  ProtocolStep,
+  DispatchSummary,
+  AlertItem,
   Notification,
   CalendarEvent,
   User,
@@ -95,10 +99,19 @@ function overviewToPatient(r: any): Patient {
 }
 
 // ---------- pacientes ----------
+// `patient_overview` roda subconsultas correlacionadas por linha (alertas abertos,
+// severidade, última atividade). Com o WhatsApp criando um paciente por número
+// novo, a tabela cresce rápido — daí o teto.
+const PATIENTS_PAGE = 200;
+
 export async function getPatients(): Promise<Patient[]> {
   const supabase = createClient();
   const [{ data, error }, { data: clinics }] = await Promise.all([
-    supabase.from('patient_overview').select('*').order('last_activity', { ascending: false }),
+    supabase
+      .from('patient_overview')
+      .select('*')
+      .order('last_activity', { ascending: false })
+      .limit(PATIENTS_PAGE),
     supabase.from('clinics').select('id, name'),
   ]);
   if (error) throw error;
@@ -162,10 +175,8 @@ export interface NewPatientInput {
   phone?: string;
   email?: string;
   notes?: string;
-  protocolId?: string;
-  surgeryType?: string;
+  /** Opcional: sem data, o paciente entra só como lead. */
   surgeryDate?: string;
-  hospital?: string;
   surgeon?: string;
   doctorId?: string;
 }
@@ -191,14 +202,25 @@ export async function createPatient(input: NewPatientInput): Promise<string> {
   if (error) throw error;
   const patientId = (patient as any).id as string;
 
-  if (input.surgeryDate && (input.surgeryType || input.protocolId)) {
+  // Sem data não há procedimento a registrar — o paciente entra como lead, que
+  // é o caso de quem chega pelo WhatsApp. A data pode ser definida depois na
+  // ficha, e é ela que dispara a geração do protocolo.
+  if (input.surgeryDate) {
+    // Um único procedimento por clínica: resolve o protocolo dela.
+    const { data: protocol } = await supabase
+      .from('protocols')
+      .select('id, name')
+      .eq('clinic_id', clinicId)
+      .order('created_at')
+      .limit(1)
+      .maybeSingle();
+
     const { error: sErr } = await supabase.from('surgeries').insert({
       clinic_id: clinicId,
       patient_id: patientId,
-      protocol_id: input.protocolId || null,
-      surgery_type: input.surgeryType || 'Cirurgia',
+      protocol_id: (protocol as any)?.id ?? null,
+      surgery_type: (protocol as any)?.name ?? 'Transplante capilar',
       date: input.surgeryDate,
-      hospital: input.hospital || null,
       surgeon: input.surgeon || null,
       doctor_id: input.doctorId || null,
       status: 'active',
@@ -241,36 +263,94 @@ export async function getProtocols(): Promise<Protocol[]> {
     color: p.color ?? '#2563EB',
     patientCount: counts.get(p.id)?.size ?? 0,
     days: (daysByProtocol.get(p.id) ?? []).sort((a, b) => a - b),
-    // Campos do editor de protocolos (fase 2) — ainda não modelados no banco.
-    questions: [],
-    medications: [],
-    alerts: [],
-    care: [],
-    requiredPhotos: [],
-    hasVideo: false,
-    hasFiles: false,
   }));
 }
 
 // ---------- dashboard ----------
 export async function getDashboardMetrics(): Promise<DashboardMetrics> {
   const supabase = createClient();
-  const [overview, appts, msgs] = await Promise.all([
+  // Contagens no servidor. Antes isto baixava `messages` e `appointments`
+  // inteiras só para contar no client — insustentável com o volume do WhatsApp.
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(dayStart);
+  dayEnd.setDate(dayEnd.getDate() + 1);
+
+  const countOf = (q: any) => q.then((r: any) => r.count ?? 0);
+
+  const [overview, todayAppointments, pendingMessages] = await Promise.all([
     supabase.from('patient_overview').select('patient_status, open_alerts'),
-    supabase.from('appointments').select('scheduled_at'),
-    supabase.from('messages').select('sender, read'),
+    countOf(
+      supabase
+        .from('appointments')
+        .select('id', { count: 'exact', head: true })
+        .gte('scheduled_at', dayStart.toISOString())
+        .lt('scheduled_at', dayEnd.toISOString()),
+    ),
+    countOf(
+      supabase
+        .from('messages')
+        .select('id', { count: 'exact', head: true })
+        .eq('sender', 'patient')
+        .eq('read', false),
+    ),
   ]);
 
   const rows = (overview.data ?? []) as any[];
-  const today = dateOf(new Date().toISOString());
 
   return {
     activePatients: rows.filter((r) => r.patient_status === 'active').length,
     alertPatients: rows.filter((r) => Number(r.open_alerts ?? 0) > 0).length,
     finishedPatients: rows.filter((r) => r.patient_status === 'finished').length,
-    todayAppointments: (appts.data ?? []).filter((a: any) => dateOf(a.scheduled_at) === today).length,
-    pendingMessages: (msgs.data ?? []).filter((m: any) => m.sender === 'patient' && !m.read).length,
+    todayAppointments,
+    pendingMessages,
   };
+}
+
+/**
+ * Distribuição do funil (CLAUDE.md §5.1). Substitui o gráfico de "uso por
+ * protocolo", que com um único procedimento é sempre 100%. Aqui é o que
+ * realmente varia — e é o que o agente movimenta pelo WhatsApp.
+ */
+const FUNNEL_LABELS: Record<string, { label: string; color: string }> = {
+  lead: { label: 'Lead', color: '#94a3b8' },
+  evaluation_scheduled: { label: 'Avaliação agendada', color: '#38bdf8' },
+  quote_sent: { label: 'Orçamento enviado', color: '#818cf8' },
+  surgery_scheduled: { label: 'Procedimento agendado', color: '#a78bfa' },
+  operated: { label: 'Operado', color: '#f472b6' },
+  in_followup: { label: 'Em acompanhamento', color: '#fbbf24' },
+  discharged: { label: 'Alta', color: '#34d399' },
+  cancelled: { label: 'Cancelado', color: '#f87171' },
+  follow_up: { label: 'Follow-up', color: '#fb923c' },
+};
+
+export async function getFunnelDistribution(): Promise<
+  { name: string; value: number; color: string }[]
+> {
+  const supabase = createClient();
+  const { data } = await supabase.from('patients').select('funnel_status');
+  const counts = new Map<string, number>();
+  (data ?? []).forEach((p: any) => {
+    const k = p.funnel_status ?? 'lead';
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  });
+  return Array.from(counts.entries())
+    .map(([k, value]) => ({
+      name: FUNNEL_LABELS[k]?.label ?? k,
+      value,
+      color: FUNNEL_LABELS[k]?.color ?? '#94a3b8',
+    }))
+    .sort((a, b) => b.value - a.value);
+}
+
+/** Alertas abertos — a fila de trabalho da equipe (badge do menu e /alertas). */
+export async function getOpenAlertsCount(): Promise<number> {
+  const supabase = createClient();
+  const { count } = await supabase
+    .from('alerts')
+    .select('id', { count: 'exact', head: true })
+    .eq('status', 'open');
+  return count ?? 0;
 }
 
 // Atividade semanal (últimos 7 dias): check-ins, alertas e mensagens por dia
@@ -358,24 +438,43 @@ async function signAttachments(paths: string[]): Promise<Map<string, string>> {
   return map;
 }
 
-export async function getMessages(): Promise<Message[]> {
+// Últimas N mensagens de UM paciente. Antes esta função baixava a tabela inteira
+// sem filtro nem limite e assinava todos os anexos de uma vez — a tela então
+// filtrava por paciente no client. Com o agente no ar, `messages` cresce em
+// milhares por mês e isso trava a página.
+export const MESSAGES_PAGE = 50;
+
+export async function getMessages(patientId: string, limit = MESSAGES_PAGE): Promise<Message[]> {
+  if (!patientId) return [];
   const supabase = createClient();
   const { data, error } = await supabase
     .from('messages')
     .select('*')
-    .order('created_at', { ascending: true });
+    .eq('patient_id', patientId)
+    // Busca as mais RECENTES e depois inverte: `ascending` com limite traria as
+    // mais antigas, que é o oposto do que a conversa precisa mostrar.
+    .order('created_at', { ascending: false })
+    .limit(limit);
   if (error) throw error;
-  const rows = (data ?? []) as any[];
+
+  const rows = ((data ?? []) as any[]).reverse();
   const urls = await signAttachments(rows.map((m) => m.attachment_path).filter(Boolean));
   return rows.map((m) => mapMessageRow(m, urls));
 }
 
 // Converte uma linha do banco em Message. `urls` é o mapa de URLs assinadas já resolvidas.
+const SENDER_MAP: Record<string, Message['sender']> = {
+  staff: 'doctor',
+  patient: 'patient',
+  ai: 'ai',
+  system: 'system',
+};
+
 export function mapMessageRow(m: any, urls?: Map<string, string>): Message {
   return {
     id: m.id,
     patientId: m.patient_id,
-    sender: m.sender === 'staff' ? 'doctor' : 'patient',
+    sender: SENDER_MAP[m.sender] ?? 'patient',
     text: m.body ?? '',
     time: timeOf(m.created_at),
     type: (m.attachment_type ?? 'text') as Message['type'],
@@ -408,23 +507,52 @@ export async function uploadChatAttachment(
   return { path, type, name: file.name };
 }
 
+// O paciente está no WhatsApp, então a mensagem não pode ser só um insert: quem
+// envia é a Edge Function `wa-send`, que fala com a Z-API e grava a linha no
+// mesmo passo. É o caminho único de saída — o agente e o cron passam por lá também.
+// O JWT do usuário vai no invoke; o segredo de servidor nunca chega ao browser.
 export async function sendMessage(
   patientId: string,
   body: string,
   attachment?: { path: string; type: 'image' | 'pdf' | 'video' | 'audio'; name: string },
 ): Promise<void> {
   const supabase = createClient();
-  const clinicId = await currentClinicId(supabase);
-  const { error } = await supabase.from('messages').insert({
-    patient_id: patientId,
-    clinic_id: clinicId,
-    sender: 'staff',
-    body: body || null,
-    read: true,
-    attachment_path: attachment?.path ?? null,
-    attachment_type: attachment?.type ?? null,
-    attachment_name: attachment?.name ?? null,
-  } as any);
+  const { data, error } = await supabase.functions.invoke('wa-send', {
+    body: { patientId, body, attachment },
+  });
+  const bodyError = (data as { error?: string } | null)?.error;
+  if (error || bodyError) throw new Error(bodyError ?? 'Não foi possível enviar pelo WhatsApp.');
+}
+
+// ---------- conversas do WhatsApp ----------
+export async function getConversations(): Promise<Conversation[]> {
+  const supabase = createClient();
+  const { data, error } = await supabase
+    .from('conversations')
+    .select('id, patient_id, wa_phone, ai_enabled, handoff_reason, last_inbound_at')
+    .order('last_inbound_at', { ascending: false, nullsFirst: false })
+    .limit(PATIENTS_PAGE);
+  if (error) throw error;
+  return (data ?? []).map((c: any) => ({
+    id: c.id,
+    patientId: c.patient_id,
+    phone: c.wa_phone,
+    aiEnabled: c.ai_enabled,
+    handoffReason: c.handoff_reason ?? null,
+    lastInboundAt: c.last_inbound_at ?? null,
+  }));
+}
+
+/** Liga/desliga o agente numa conversa (CLAUDE.md §7.3 — a equipe precisa poder reativar). */
+export async function setConversationAiEnabled(
+  conversationId: string,
+  enabled: boolean,
+): Promise<void> {
+  const supabase = createClient();
+  const { error } = await supabase
+    .from('conversations')
+    .update({ ai_enabled: enabled, handoff_reason: enabled ? null : 'pausada pela equipe' })
+    .eq('id', conversationId);
   if (error) throw error;
 }
 
@@ -434,7 +562,8 @@ export async function getNotifications(): Promise<Notification[]> {
   const { data, error } = await supabase
     .from('notifications')
     .select('*, patients(full_name)')
-    .order('created_at', { ascending: false });
+    .order('created_at', { ascending: false })
+    .limit(100);
   if (error) throw error;
   return (data ?? []).map((n: any) => ({
     id: n.id,
@@ -509,14 +638,14 @@ export async function updateMyProfile(input: { fullName: string; phone: string }
   if (error) throw error;
 }
 
-export async function getMyClinic(): Promise<{ id: string; name: string; cnpj: string; phone: string; email: string; address: string } | null> {
+export async function getMyClinic(): Promise<{ id: string; name: string; cnpj: string; phone: string; email: string; address: string; inviteCode: string } | null> {
   const supabase = createClient();
   const { data: auth } = await supabase.auth.getUser();
   if (!auth.user) return null;
   const { data: prof } = await supabase.from('profiles').select('clinic_id').eq('id', auth.user.id).maybeSingle();
   const clinicId = (prof as any)?.clinic_id;
   if (!clinicId) return null;
-  const { data } = await supabase.from('clinics').select('id, name, cnpj, phone, email, address').eq('id', clinicId).maybeSingle();
+  const { data } = await supabase.from('clinics').select('id, name, cnpj, phone, email, address, invite_code').eq('id', clinicId).maybeSingle();
   if (!data) return null;
   const c = data as any;
   return {
@@ -526,6 +655,7 @@ export async function getMyClinic(): Promise<{ id: string; name: string; cnpj: s
     phone: c.phone ?? '',
     email: c.email ?? '',
     address: c.address ?? '',
+    inviteCode: c.invite_code ?? '',
   };
 }
 
@@ -555,6 +685,9 @@ export async function createUser(input: {
   email: string;
   type: 'admin' | 'professional';
   clinicId?: string;
+  specialty?: string;
+  crm?: string;
+  phone?: string;
 }): Promise<{ emailed: boolean; tempPassword?: string }> {
   const supabase = createClient();
   const { data, error } = await supabase.functions.invoke('create-user', { body: input });
@@ -623,13 +756,14 @@ export interface ClinicRow {
   plan: string;
   createdAt: string;
   patientCount: number;
+  inviteCode: string;
 }
 
 // Lista de clínicas. Super-admin vê todas; médico vê só a própria (via RLS).
 export async function getClinics(): Promise<ClinicRow[]> {
   const supabase = createClient();
   const [{ data: clinics, error }, { data: pats }] = await Promise.all([
-    supabase.from('clinics').select('id, name, plan, created_at').order('created_at'),
+    supabase.from('clinics').select('id, name, plan, created_at, invite_code').order('created_at'),
     supabase.from('patients').select('clinic_id'),
   ]);
   if (error) throw error;
@@ -641,6 +775,7 @@ export async function getClinics(): Promise<ClinicRow[]> {
     plan: c.plan,
     createdAt: c.created_at,
     patientCount: counts.get(c.id) ?? 0,
+    inviteCode: c.invite_code ?? '',
   }));
 }
 
@@ -667,6 +802,248 @@ export async function getCannedResponses(): Promise<CannedResponse[]> {
   const { data, error } = await supabase.from('canned_responses').select('*').order('title');
   if (error) throw error;
   return (data ?? []).map((c: any) => ({ id: c.id, title: c.title, body: c.body }));
+}
+
+// ===========================================================================
+// FAQ do agente (canned_responses)
+// ===========================================================================
+// É a base de conhecimento do agente: a tool `search_faq` lê daqui, e sem
+// correspondência a IA é instruída a encaminhar para a equipe em vez de
+// responder por conta própria (CLAUDE.md §1.1).
+
+const PLACEHOLDER = '[TEXTO A DEFINIR';
+
+export async function createFaqEntry(title: string, body: string): Promise<void> {
+  const supabase = createClient();
+  const clinicId = await currentClinicId(supabase);
+  if (!clinicId) throw new Error('Clínica do usuário não encontrada.');
+  const { error } = await supabase
+    .from('canned_responses')
+    .insert({ clinic_id: clinicId, title, body } as any);
+  if (error) throw error;
+}
+
+export async function updateFaqEntry(id: string, title: string, body: string): Promise<void> {
+  const supabase = createClient();
+  const { error } = await supabase
+    .from('canned_responses')
+    .update({ title, body } as any)
+    .eq('id', id);
+  if (error) throw error;
+}
+
+export async function deleteFaqEntry(id: string): Promise<void> {
+  const supabase = createClient();
+  const { error } = await supabase.from('canned_responses').delete().eq('id', id);
+  if (error) throw error;
+}
+
+// ===========================================================================
+// Protocolo — os textos que o motor de disparo envia
+// ===========================================================================
+
+function stepLabel(dayOffset: number): string {
+  return dayOffset < 0 ? `D${dayOffset}` : `D+${dayOffset}`;
+}
+
+export async function getProtocolSteps(): Promise<ProtocolStep[]> {
+  const supabase = createClient();
+  const clinicId = await currentClinicId(supabase);
+  if (!clinicId) return [];
+
+  // Um procedimento por clínica: pega o protocolo dela e lista os passos.
+  const { data: protocol } = await supabase
+    .from('protocols')
+    .select('id')
+    .eq('clinic_id', clinicId)
+    .order('created_at')
+    .limit(1)
+    .maybeSingle();
+  if (!protocol) return [];
+
+  const { data, error } = await supabase
+    .from('protocol_steps')
+    .select('id, day_offset, phase, title, instructions, send_time, active')
+    .eq('protocol_id', (protocol as any).id)
+    .order('day_offset');
+  if (error) throw error;
+
+  return (data ?? []).map((s: any) => ({
+    id: s.id,
+    dayOffset: Number(s.day_offset),
+    label: stepLabel(Number(s.day_offset)),
+    phase: s.phase ?? null,
+    title: s.title ?? '',
+    body: s.instructions ?? '',
+    sendTime: String(s.send_time ?? '09:00').slice(0, 5),
+    active: s.active !== false,
+    pending: !s.instructions || String(s.instructions).trimStart().startsWith(PLACEHOLDER),
+  }));
+}
+
+export async function updateProtocolStep(
+  id: string,
+  input: { body: string; sendTime: string; active: boolean },
+): Promise<void> {
+  const supabase = createClient();
+  const { error } = await supabase
+    .from('protocol_steps')
+    .update({
+      instructions: input.body,
+      send_time: input.sendTime,
+      active: input.active,
+    } as any)
+    .eq('id', id);
+  if (error) throw error;
+}
+
+/** Situação dos disparos já materializados (`protocol_messages`). */
+export async function getDispatchSummary(): Promise<DispatchSummary> {
+  const supabase = createClient();
+  const countBy = (status: string) =>
+    supabase
+      .from('protocol_messages')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', status)
+      .then((r: any) => r.count ?? 0);
+
+  const [scheduled, sent, failed] = await Promise.all([
+    countBy('scheduled'),
+    countBy('sent'),
+    countBy('failed'),
+  ]);
+  return { scheduled, sent, failed };
+}
+
+/**
+ * Devolve à fila os disparos que falharam por estarem com placeholder.
+ *
+ * Escrever o texto não basta: o `protocol_messages` já marcado `failed` não
+ * volta sozinho. Reescrever `date` com o próprio valor faz o trigger
+ * `trg_surgery_protocol_schedule` disparar (ele reage à coluna estar no SET,
+ * não a ela mudar), e a função de regeneração limpa os `failed` e recria.
+ */
+export async function reprocessDispatches(): Promise<number> {
+  const supabase = createClient();
+  const clinicId = await currentClinicId(supabase);
+  if (!clinicId) return 0;
+
+  const { data: surgeries, error } = await supabase
+    .from('surgeries')
+    .select('id, date')
+    .eq('clinic_id', clinicId)
+    .eq('status', 'active');
+  if (error) throw error;
+
+  for (const s of (surgeries ?? []) as any[]) {
+    const { error: uErr } = await supabase
+      .from('surgeries')
+      .update({ date: s.date } as any)
+      .eq('id', s.id);
+    if (uErr) throw uErr;
+  }
+  return (surgeries ?? []).length;
+}
+
+/**
+ * Data do procedimento. É a âncora de todo o D+n: alterá-la regenera os
+ * disparos pendentes automaticamente pelo trigger.
+ */
+export async function updateProcedureDate(patientId: string, date: string): Promise<void> {
+  const supabase = createClient();
+  const { data: surgery } = await supabase
+    .from('surgeries')
+    .select('id')
+    .eq('patient_id', patientId)
+    .order('date', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (surgery) {
+    const { error } = await supabase
+      .from('surgeries')
+      .update({ date } as any)
+      .eq('id', (surgery as any).id);
+    if (error) throw error;
+    return;
+  }
+
+  // Paciente que chegou pelo WhatsApp como lead ainda não tem procedimento.
+  const clinicId = await currentClinicId(supabase);
+  if (!clinicId) throw new Error('Clínica do usuário não encontrada.');
+  const { data: protocol } = await supabase
+    .from('protocols').select('id').eq('clinic_id', clinicId).order('created_at').limit(1).maybeSingle();
+
+  const { error } = await supabase.from('surgeries').insert({
+    clinic_id: clinicId,
+    patient_id: patientId,
+    protocol_id: (protocol as any)?.id ?? null,
+    surgery_type: 'Transplante capilar',
+    date,
+    status: 'active',
+  } as any);
+  if (error) throw error;
+}
+
+/** Textos já fornecidos pela clínica (migration 0015), sugeridos no editor. */
+export async function getCareTipSuggestions(): Promise<string[]> {
+  const supabase = createClient();
+  const { data } = await supabase
+    .from('care_tips')
+    .select('body')
+    .eq('phase', 'postop')
+    .order('sort_order');
+  return (data ?? []).map((t: any) => t.body);
+}
+
+// ===========================================================================
+// Fila de alertas
+// ===========================================================================
+
+export async function getOpenAlerts(): Promise<AlertItem[]> {
+  const supabase = createClient();
+  const { data, error } = await supabase
+    .from('alerts')
+    .select('id, patient_id, severity, reason, created_at, checkin_id, patients(full_name)')
+    .eq('status', 'open')
+    .order('created_at', { ascending: false })
+    .limit(100);
+  if (error) throw error;
+
+  const rows = (data ?? []) as any[];
+  if (rows.length === 0) return [];
+
+  // A IA se pausa ao escalar; mostrar isso é o que liga o alerta à conversa.
+  const { data: convs } = await supabase
+    .from('conversations')
+    .select('patient_id, ai_enabled')
+    .in('patient_id', rows.map((r) => r.patient_id));
+  const paused = new Map<string, boolean>(
+    (convs ?? []).map((c: any) => [c.patient_id, !c.ai_enabled]),
+  );
+
+  const rank: Record<string, number> = { critical: 0, high: 1, medium: 2 };
+  return rows
+    .map((a) => ({
+      id: a.id,
+      patientId: a.patient_id,
+      patientName: a.patients?.full_name ?? 'Paciente',
+      severity: a.severity,
+      reason: a.reason,
+      createdAt: a.created_at,
+      fromCheckin: Boolean(a.checkin_id),
+      aiPaused: paused.has(a.patient_id) ? paused.get(a.patient_id)! : null,
+    }))
+    .sort((a, b) => (rank[a.severity] ?? 9) - (rank[b.severity] ?? 9));
+}
+
+export async function resolveAlert(id: string): Promise<void> {
+  const supabase = createClient();
+  const { error } = await supabase
+    .from('alerts')
+    .update({ status: 'resolved', resolved_at: new Date().toISOString() } as any)
+    .eq('id', id);
+  if (error) throw error;
 }
 
 // ---------- relatórios ----------
@@ -729,6 +1106,7 @@ function rowToDoctor(d: any): Doctor {
     phone: d.phone ?? '',
     email: d.email ?? '',
     active: d.active !== false,
+    clinicId: d.clinic_id ?? '',
   };
 }
 
@@ -736,9 +1114,17 @@ export async function getDoctors(activeOnly = false): Promise<Doctor[]> {
   const supabase = createClient();
   let q = supabase.from('doctors').select('*').order('full_name');
   if (activeOnly) q = q.eq('active', true);
-  const { data, error } = await q;
+  const [{ data, error }, { data: clinics }] = await Promise.all([
+    q,
+    supabase.from('clinics').select('id, name'),
+  ]);
   if (error) throw error;
-  return (data ?? []).map(rowToDoctor);
+  const clinicName = new Map<string, string>((clinics ?? []).map((c: any) => [c.id, c.name]));
+  return (data ?? []).map((d: any) => {
+    const doc = rowToDoctor(d);
+    doc.clinicName = doc.clinicId ? clinicName.get(doc.clinicId) : undefined;
+    return doc;
+  });
 }
 
 export interface DoctorInput {
