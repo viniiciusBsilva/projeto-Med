@@ -13,31 +13,67 @@ import {
   FileBarChart,
   Settings,
   Activity,
-  Stethoscope,
+  CalendarClock,
+  Building2,
+  AlertTriangle,
   X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import { createClient } from '@/lib/supabase/client';
+import { getOpenAlertsCount } from '@/lib/queries';
 
+// adminOnly = visível só para o admin geral (super-admin). O médico não vê no menu
+// e as rotas são bloqueadas por layout server (ver app/(app)/<rota>/layout.tsx).
+// Ordem por rotina do médico: primeiro o que exige ação hoje (alertas), depois
+// a comunicação com o paciente, depois consulta e administração.
 const navItems = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/patients', label: 'Pacientes', icon: Users },
-  { href: '/doctors', label: 'Médicos', icon: UserRound },
-  { href: '/surgeries', label: 'Cirurgias', icon: Stethoscope },
+  // Fila de trabalho: a IA se pausa sozinha ao escalar, e alguém precisa assumir.
+  { href: '/alertas', label: 'Alertas', icon: AlertTriangle },
+  // As duas faces da conversa com o paciente, lado a lado de propósito:
+  // "Mensagens" é o que acontece ao vivo, "Mensagens programadas" é o que sai
+  // sozinho no D+n. Sem escrever o segundo, nada é enviado.
+  { href: '/messages', label: 'Mensagens', icon: MessageSquare },
+  { href: '/mensagens-programadas', label: 'Mensagens programadas', icon: CalendarClock },
   { href: '/calendar', label: 'Agenda', icon: Calendar },
-  { href: '/messages', label: 'Mensagens', icon: MessageSquare, badge: 3 },
-  { href: '/notifications', label: 'Notificações', icon: Bell, badge: 4 },
+  { href: '/notifications', label: 'Notificações', icon: Bell },
   { href: '/reports', label: 'Relatórios', icon: FileBarChart },
+  { href: '/doctors', label: 'Médicos', icon: UserRound, adminOnly: true },
+  { href: '/clinics', label: 'Clínicas', icon: Building2, adminOnly: true },
   { href: '/settings', label: 'Configurações', icon: Settings },
 ];
 
 interface SidebarProps {
   open: boolean;
   onClose: () => void;
+  isSuperadmin?: boolean;
 }
 
-export function Sidebar({ open, onClose }: SidebarProps) {
+export function Sidebar({ open, onClose, isSuperadmin }: SidebarProps) {
   const pathname = usePathname();
+  const items = navItems.filter((item) => !item.adminOnly || isSuperadmin);
+
+  // Alertas abertos: a IA se pausa ao escalar, então esse número é a fila de
+  // trabalho da equipe. Realtime porque o alerta nasce de uma conversa que a
+  // equipe não está necessariamente olhando.
+  const [openAlerts, setOpenAlerts] = React.useState(0);
+
+  React.useEffect(() => {
+    const refresh = () => getOpenAlertsCount().then(setOpenAlerts).catch(() => {});
+    refresh();
+    const supabase = createClient();
+    const channel = supabase
+      .channel('sidebar-alerts')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'alerts' }, refresh)
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  const badgeFor = (href: string) => (href === '/alertas' ? openAlerts : 0);
 
   return (
     <>
@@ -74,7 +110,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
         </div>
 
         <nav className="flex-1 space-y-1 px-3 py-4">
-          {navItems.map((item) => {
+          {items.map((item) => {
             const active = pathname === item.href || pathname.startsWith(item.href + '/');
             return (
               <Link
@@ -90,7 +126,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
               >
                 <item.icon className={cn('h-4.5 w-4.5 shrink-0', active ? 'text-primary-foreground' : '')} style={{ width: 18, height: 18 }} />
                 <span className="flex-1">{item.label}</span>
-                {item.badge && (
+                {badgeFor(item.href) > 0 && (
                   <span
                     className={cn(
                       'flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-xs font-semibold',
@@ -99,7 +135,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
                         : 'bg-primary text-primary-foreground'
                     )}
                   >
-                    {item.badge}
+                    {badgeFor(item.href)}
                   </span>
                 )}
               </Link>

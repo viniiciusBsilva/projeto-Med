@@ -18,19 +18,19 @@ import { FileText, FileSpreadsheet, Download, Users, Clock, AlertTriangle, Activ
 import { PageHeader } from '@/components/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { getProtocols, getWeeklyActivity, getReportStats } from '@/lib/queries';
+import { getProtocols, getWeeklyActivity, getReportStats, getFunnelDistribution } from '@/lib/queries';
 
 export default function ReportsPage() {
   const [recoveryTimeData, setRecoveryTimeData] = React.useState<{ name: string; tempo: number; pacientes: number }[]>([]);
-  const [protocolUsageData, setProtocolUsageData] = React.useState<{ name: string; value: number; color: string }[]>([]);
+  const [funnelData, setFunnelData] = React.useState<{ name: string; value: number; color: string }[]>([]);
   const [weeklyChartData, setWeeklyChartData] = React.useState<{ day: string; pacientes: number; alertas: number; mensagens: number }[]>([]);
   const [summary, setSummary] = React.useState<{ totalPatients: number; avgRecoveryDays: number; alertsCount: number; protocolsCount: number } | null>(null);
 
   React.useEffect(() => {
     getProtocols().then((protocols) => {
       setRecoveryTimeData(protocols.map((p) => ({ name: p.name, tempo: p.duration, pacientes: p.patientCount })));
-      setProtocolUsageData(protocols.map((p) => ({ name: p.name, value: p.patientCount, color: p.color })));
     });
+    getFunnelDistribution().then(setFunnelData).catch(() => {});
     getWeeklyActivity().then(setWeeklyChartData);
     getReportStats().then(setSummary);
   }, []);
@@ -111,16 +111,16 @@ export default function ReportsPage() {
           </CardContent>
         </Card>
 
-        {/* Protocol Usage */}
+        {/* Distribuição do funil — com um procedimento só, é o que varia. */}
         <Card>
           <CardHeader className="pb-4">
-            <CardTitle className="text-base font-semibold">Distribuição de protocolos</CardTitle>
+            <CardTitle className="text-base font-semibold">Pacientes por etapa do funil</CardTitle>
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100" height={300}>
               <PieChart>
                 <Pie
-                  data={protocolUsageData}
+                  data={funnelData}
                   cx="50%"
                   cy="50%"
                   innerRadius={60}
@@ -128,7 +128,7 @@ export default function ReportsPage() {
                   paddingAngle={2}
                   dataKey="value"
                 >
-                  {protocolUsageData.map((entry, i) => (
+                  {funnelData.map((entry, i) => (
                     <Cell key={i} fill={entry.color} />
                   ))}
                 </Pie>

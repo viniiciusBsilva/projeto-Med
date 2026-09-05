@@ -39,6 +39,7 @@ class _SignupScreenState extends State<SignupScreen> {
   String? _error;
 
   // pessoais
+  final _clinicCode = TextEditingController();
   final _name = TextEditingController();
   final _email = TextEditingController();
   final _password = TextEditingController();
@@ -62,7 +63,7 @@ class _SignupScreenState extends State<SignupScreen> {
 
   @override
   void dispose() {
-    for (final c in [_name, _email, _password, _cpf, _birth, _phone, _grafts, _medications, _allergies, _comorbidities]) {
+    for (final c in [_clinicCode, _name, _email, _password, _cpf, _birth, _phone, _grafts, _medications, _allergies, _comorbidities]) {
       c.dispose();
     }
     super.dispose();
@@ -108,6 +109,7 @@ class _SignupScreenState extends State<SignupScreen> {
         fullName: _name.text.trim(),
         email: _email.text.trim().toLowerCase(),
         password: _password.text,
+        clinicCode: _clinicCode.text.trim().isEmpty ? null : _clinicCode.text.trim(),
         cpf: _cpf.text.trim().isEmpty ? null : _cpf.text.trim(),
         birthDate: _birth.text.trim().isEmpty ? null : _birth.text.trim(),
         phone: _phone.text.trim().isEmpty ? null : _phone.text.trim(),
@@ -240,6 +242,13 @@ class _SignupScreenState extends State<SignupScreen> {
           key: _formKey,
           autovalidateMode: AutovalidateMode.onUserInteraction,
           child: Column(children: [
+            _field(_clinicCode, 'Código da clínica',
+                formatters: [
+                  FilteringTextInputFormatter.allow(RegExp('[a-zA-Z0-9]')),
+                  _UpperCaseFormatter(),
+                ],
+                maxLength: 8,
+                validator: (v) => null), // opcional: sem código, entra na clínica demo
             _field(_name, 'Nome completo',
                 validator: (v) => (v == null || v.trim().length < 3) ? 'Informe o nome completo.' : null),
             _field(_email, 'E-mail',
@@ -368,6 +377,13 @@ class _SignupScreenState extends State<SignupScreen> {
 }
 
 /// Máscara de CPF: 000.000.000-00
+class _UpperCaseFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(TextEditingValue oldValue, TextEditingValue newValue) {
+    return newValue.copyWith(text: newValue.text.toUpperCase());
+  }
+}
+
 class _CpfInputFormatter extends TextInputFormatter {
   @override
   TextEditingValue formatEditUpdate(TextEditingValue oldValue, TextEditingValue newValue) {

@@ -1,7 +1,7 @@
-// Edge Function: cria um usuário de SISTEMA (auth) já confirmado, com senha aleatória
-// enviada por e-mail (Resend). Só o ADMIN GERAL (is_superadmin) pode chamar. verify_jwt=true.
-// Tipos: 'admin' (admin geral) | 'professional' (médico de uma clínica existente).
-// Para profissional em NOVA clínica, use a função provision-clinic.
+// Edge Function: onboarding de uma nova clínica + seu profissional (médico).
+// Só o ADMIN GERAL (profiles.is_superadmin) pode chamar. verify_jwt=true.
+// Cria: clinics -> auth user (staff da nova clínica) -> registro em doctors.
+// Secrets (opcionais p/ e-mail): RESEND_API_KEY, RESEND_SENDER_EMAIL, RESEND_SENDER_NAME.
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
@@ -48,89 +48,79 @@ Deno.serve(async (req: Request) => {
   // 2) Só admin geral (super-admin).
   const { data: prof } = await admin
     .from('profiles')
-    .select('clinic_id, is_superadmin')
+    .select('is_superadmin')
     .eq('id', caller.id)
     .maybeSingle();
   if (!prof || (prof as any).is_superadmin !== true) {
-    return json({ error: 'Apenas o admin geral pode criar usuários.' }, 403);
+    return json({ error: 'Apenas o admin geral pode cadastrar clínicas.' }, 403);
   }
-  const callerClinic = (prof as any).clinic_id as string;
 
   // 3) Valida entrada.
-  let name = '', email = '', type = 'professional', clinicId = '';
-  let specialty = '', crm = '', phone = '';
+  let clinicName = '', plan = 'starter', profName = '', email = '', specialty = '', crm = '', phone = '';
   try {
     const b = await req.json();
-    name = String(b.name ?? '').trim();
+    clinicName = String(b.clinicName ?? '').trim();
+    plan = String(b.plan ?? 'starter').trim() || 'starter';
+    profName = String(b.professionalName ?? '').trim();
     email = String(b.email ?? '').trim().toLowerCase();
-    type = String(b.type ?? 'professional').trim();
-    clinicId = String(b.clinicId ?? '').trim();
     specialty = String(b.specialty ?? '').trim();
     crm = String(b.crm ?? '').trim();
     phone = String(b.phone ?? '').trim();
   } catch {
     return json({ error: 'Corpo inválido.' }, 400);
   }
-  if (!name) return json({ error: 'Informe o nome.' }, 400);
+  if (!clinicName) return json({ error: 'Informe o nome da clínica.' }, 400);
+  if (!profName) return json({ error: 'Informe o nome do profissional.' }, 400);
   if (!email || !email.includes('@')) return json({ error: 'Informe um e-mail válido.' }, 400);
-  if (type !== 'admin' && type !== 'professional') return json({ error: 'Tipo inválido.' }, 400);
 
-  // Clínica de destino: admin -> clínica do autor; profissional -> clínica escolhida.
-  let targetClinic = callerClinic;
-  if (type === 'professional') {
-    if (!clinicId) return json({ error: 'Selecione a clínica do profissional.' }, 400);
-    targetClinic = clinicId;
-    // Já existe um médico com este e-mail? (cobre médicos sem login, ex.: seed)
-    const { data: existingDoc } = await admin.from('doctors').select('id').eq('email', email).limit(1);
-    if (existingDoc && existingDoc.length > 0) {
-      return json({ error: 'Já existe um médico com este e-mail.' }, 409);
-    }
-  }
-  const jobTitle = type === 'admin' ? 'Administrador' : 'Médico';
+  // 4) Cria a clínica.
+  const { data: clinic, error: clinicErr } = await admin
+    .from('clinics')
+    .insert({ name: clinicName, plan })
+    .select('id')
+    .single();
+  if (clinicErr || !clinic) return json({ error: 'Não foi possível criar a clínica.' }, 400);
+  const clinicId = (clinic as any).id as string;
 
-  // 4) Cria o usuário (confirmado). O trigger cria o profile a partir do metadata.
+  // 5) Cria o profissional (staff da nova clínica). NÃO é super-admin (default false).
   const tempPassword = randomPassword();
-  const { data: created, error: createErr } = await admin.auth.admin.createUser({
+  const { error: createErr } = await admin.auth.admin.createUser({
     email,
     password: tempPassword,
     email_confirm: true,
-    user_metadata: { full_name: name, role: 'staff', clinic_id: targetClinic, job_title: jobTitle },
+    user_metadata: { full_name: profName, role: 'staff', clinic_id: clinicId, job_title: 'Médico' },
   });
   if (createErr) {
+    // rollback da clínica se o usuário falhar
+    await admin.from('clinics').delete().eq('id', clinicId);
     const msg = createErr.message.toLowerCase();
     if (msg.includes('already') || msg.includes('registered') || msg.includes('exists')) {
       return json({ error: 'Este e-mail já está cadastrado.' }, 409);
     }
-    return json({ error: 'Não foi possível criar o usuário.' }, 400);
-  }
-  const newId = created.user?.id;
-
-  // 5) Ajustes por tipo.
-  if (type === 'admin' && newId) {
-    await admin.from('profiles').update({ is_superadmin: true }).eq('id', newId);
-  }
-  if (type === 'professional' && newId) {
-    await admin.from('doctors').insert({
-      clinic_id: targetClinic,
-      full_name: name,
-      specialty: specialty || 'Transplante capilar',
-      crm: crm || null,
-      phone: phone || null,
-      email,
-      active: true,
-    });
+    return json({ error: 'Não foi possível criar o profissional.' }, 400);
   }
 
-  // 6) Envia a senha por e-mail (Resend). Sem secret -> devolve para repasse manual.
+  // 6) Registra o profissional na tabela de médicos da clínica (para a agenda).
+  await admin.from('doctors').insert({
+    clinic_id: clinicId,
+    full_name: profName,
+    specialty: specialty || 'Transplante capilar',
+    crm: crm || null,
+    phone: phone || null,
+    email,
+    active: true,
+  });
+
+  // 7) Envia a senha por e-mail (Resend). Sem secret -> devolve para repasse manual.
   const apiKey = Deno.env.get('RESEND_API_KEY');
   const senderEmail = Deno.env.get('RESEND_SENDER_EMAIL') ?? 'onboarding@resend.dev';
   const senderName = Deno.env.get('RESEND_SENDER_NAME') ?? 'PostCare Pro';
-  if (!apiKey) return json({ ok: true, emailed: false, tempPassword });
+  if (!apiKey) return json({ ok: true, clinicId, emailed: false, tempPassword });
 
   const html = `
     <div style="font-family:Inter,system-ui,sans-serif;max-width:480px;margin:0 auto;color:#0F172A">
-      <h1 style="font-size:20px;margin:0 0 8px">Bem-vindo(a), ${name}!</h1>
-      <p style="color:#475569;font-size:14px;line-height:1.6">Uma conta foi criada para voce no PostCare Pro. Use a senha temporaria abaixo para entrar e troque-a no primeiro acesso.</p>
+      <h1 style="font-size:20px;margin:0 0 8px">Bem-vindo(a), ${profName}!</h1>
+      <p style="color:#475569;font-size:14px;line-height:1.6">A clínica <strong>${clinicName}</strong> foi criada no PostCare Pro. Use a senha temporária abaixo para entrar e troque-a no primeiro acesso.</p>
       <div style="margin:24px 0;padding:16px;text-align:center;background:#EFF6FF;border:1px solid #BFDBFE;border-radius:12px">
         <span style="font-size:24px;font-weight:700;letter-spacing:2px;color:#1D4ED8">${tempPassword}</span>
       </div>
@@ -140,9 +130,14 @@ Deno.serve(async (req: Request) => {
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ from: `${senderName} <${senderEmail}>`, to: [email], subject: 'Seu acesso ao PostCare Pro', html }),
+    body: JSON.stringify({
+      from: `${senderName} <${senderEmail}>`,
+      to: [email],
+      subject: 'Seu acesso ao PostCare Pro',
+      html,
+    }),
   }).catch(() => null);
 
-  if (!res || !res.ok) return json({ ok: true, emailed: false, tempPassword });
-  return json({ ok: true, emailed: true });
+  if (!res || !res.ok) return json({ ok: true, clinicId, emailed: false, tempPassword });
+  return json({ ok: true, clinicId, emailed: true });
 });

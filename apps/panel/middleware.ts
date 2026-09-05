@@ -5,8 +5,9 @@ import { NextResponse, type NextRequest } from 'next/server';
 const PROTECTED_PREFIXES = [
   '/dashboard',
   '/patients',
+  '/alertas',
+  '/mensagens-programadas',
   '/doctors',
-  '/surgeries',
   '/calendar',
   '/messages',
   '/notifications',

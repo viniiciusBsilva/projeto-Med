@@ -15,16 +15,17 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   // Nome exibido: full_name do profile, com fallback pro e-mail.
   const { data: profile } = await supabase
     .from('profiles')
-    .select('full_name, role')
+    .select('full_name, role, is_superadmin')
     .eq('id', user.id)
     .maybeSingle();
 
-  const p = profile as { full_name?: string | null; role?: string } | null;
+  const p = profile as { full_name?: string | null; role?: string; is_superadmin?: boolean } | null;
   const displayName = p?.full_name ?? user.email ?? 'Usuário';
-  const roleLabel = p?.role === 'staff' ? 'Equipe da clínica' : 'Paciente';
+  const isSuperadmin = p?.is_superadmin === true;
+  const roleLabel = isSuperadmin ? 'Admin geral' : p?.role === 'staff' ? 'Profissional' : 'Paciente';
 
   return (
-    <AppShell userName={displayName} userEmail={user.email ?? ''} roleLabel={roleLabel}>
+    <AppShell userName={displayName} userEmail={user.email ?? ''} roleLabel={roleLabel} isSuperadmin={isSuperadmin}>
       {children}
     </AppShell>
   );

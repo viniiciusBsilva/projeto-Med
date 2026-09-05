@@ -21,10 +21,12 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { StatusBadge } from '@/components/status-badges';
-import type { Patient, Message } from '@/lib/types';
+import type { Patient, Message, Conversation } from '@/lib/types';
 import {
   getPatients,
   getMessages,
+  getConversations,
+  setConversationAiEnabled,
   sendMessage,
   uploadChatAttachment,
   signMessageRow,
@@ -43,10 +45,12 @@ const ACCEPT: Record<AttachKind, string> = {
 export default function MessagesPage() {
   const [patients, setPatients] = React.useState<Patient[]>([]);
   const [messages, setMessages] = React.useState<Message[]>([]);
+  const [conversations, setConversations] = React.useState<Conversation[]>([]);
   const [selectedPatient, setSelectedPatient] = React.useState<Patient | null>(null);
   const [search, setSearch] = React.useState('');
   const [input, setInput] = React.useState('');
   const [uploading, setUploading] = React.useState<AttachKind | null>(null);
+  const [togglingAi, setTogglingAi] = React.useState(false);
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const pendingKind = React.useRef<AttachKind | null>(null);
@@ -54,12 +58,35 @@ export default function MessagesPage() {
   selectedPatientRef.current = selectedPatient;
 
   React.useEffect(() => {
+    // ?patient=<id> vem da fila de alertas: a equipe clica em "abrir conversa"
+    // e já cai no paciente certo, em vez de ter que procurar na lista.
+    const wanted = new URLSearchParams(window.location.search).get('patient');
     getPatients().then((p) => {
       setPatients(p);
-      setSelectedPatient((cur) => cur ?? p[0] ?? null);
+      setSelectedPatient((cur) => cur ?? p.find((x) => x.id === wanted) ?? p[0] ?? null);
     });
-    getMessages().then(setMessages);
+    getConversations().then(setConversations).catch(() => setConversations([]));
   }, []);
+
+  // Carrega só a conversa aberta. Antes a tela baixava TODAS as mensagens da
+  // clínica e filtrava no client — com o agente no ar isso não se sustenta.
+  React.useEffect(() => {
+    if (!selectedPatient) {
+      setMessages([]);
+      return;
+    }
+    let cancelled = false;
+    getMessages(selectedPatient.id)
+      .then((m) => {
+        if (!cancelled) setMessages(m);
+      })
+      .catch(() => {
+        if (!cancelled) setMessages([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedPatient]);
 
   // Realtime: novas mensagens (de qualquer paciente) entram sem refresh.
   React.useEffect(() => {
@@ -70,6 +97,9 @@ export default function MessagesPage() {
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'messages' },
         async (payload) => {
+          // Só entra no estado o que for da conversa aberta; do contrário a
+          // memória cresce com o tráfego de todos os pacientes.
+          if (payload.new.patient_id !== selectedPatientRef.current?.id) return;
           const msg = await signMessageRow(payload.new);
           setMessages((prev) =>
             prev.some((m) => m.id === msg.id) ? prev : [...prev, msg],
@@ -86,13 +116,43 @@ export default function MessagesPage() {
           );
         },
       )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'conversations' },
+        () => {
+          // A IA pode ser pausada por um alerta no meio do atendimento — o
+          // painel precisa refletir isso sem refresh (§7.3).
+          getConversations().then(setConversations).catch(() => {});
+        },
+      )
       .subscribe();
     return () => {
       supabase.removeChannel(channel);
     };
   }, []);
 
-  const patientMessages = messages.filter((m) => m.patientId === selectedPatient?.id);
+  // `messages` já vem filtrado por paciente do banco.
+  const patientMessages = messages;
+  const activeConversation = conversations.find((c) => c.patientId === selectedPatient?.id) ?? null;
+
+  const toggleAi = async () => {
+    if (!activeConversation || togglingAi) return;
+    const next = !activeConversation.aiEnabled;
+    setTogglingAi(true);
+    // Otimista: o realtime confirma logo em seguida.
+    setConversations((prev) =>
+      prev.map((c) => (c.id === activeConversation.id ? { ...c, aiEnabled: next } : c)),
+    );
+    try {
+      await setConversationAiEnabled(activeConversation.id, next);
+    } catch {
+      setConversations((prev) =>
+        prev.map((c) => (c.id === activeConversation.id ? { ...c, aiEnabled: !next } : c)),
+      );
+    } finally {
+      setTogglingAi(false);
+    }
+  };
 
   React.useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
@@ -204,10 +264,39 @@ export default function MessagesPage() {
               </Avatar>
               <div>
                 <p className="text-sm font-semibold">{selectedPatient?.name ?? 'Selecione um paciente'}</p>
-                <p className="text-xs text-success">{selectedPatient ? 'Conversa' : ''}</p>
+                <p className="text-xs text-muted-foreground">
+                  {activeConversation
+                    ? `WhatsApp ${activeConversation.phone}`
+                    : selectedPatient
+                      ? 'Sem conversa no WhatsApp ainda'
+                      : ''}
+                </p>
               </div>
             </div>
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-2">
+              {/* Interruptor do handoff (§7.3): a equipe precisa poder assumir
+                  a conversa e devolver para a IA depois. */}
+              {activeConversation && (
+                <button
+                  onClick={toggleAi}
+                  disabled={togglingAi}
+                  title={
+                    activeConversation.aiEnabled
+                      ? 'Pausar o agente e assumir a conversa'
+                      : activeConversation.handoffReason ?? 'Reativar o agente'
+                  }
+                  className={cn(
+                    'flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors',
+                    activeConversation.aiEnabled
+                      ? 'border-success/30 bg-success/10 text-success hover:bg-success/20'
+                      : 'border-warning/30 bg-warning/10 text-warning hover:bg-warning/20',
+                    togglingAi && 'opacity-60',
+                  )}
+                >
+                  <Bot className="h-3.5 w-3.5" style={{ width: 14, height: 14 }} />
+                  {activeConversation.aiEnabled ? 'IA ativa' : 'IA pausada'}
+                </button>
+              )}
               <Button variant="ghost" size="icon" className="h-9 w-9">
                 <Phone className="h-4 w-4" style={{ width: 16, height: 16 }} />
               </Button>
@@ -217,11 +306,20 @@ export default function MessagesPage() {
             </div>
           </div>
 
+          {activeConversation && !activeConversation.aiEnabled && activeConversation.handoffReason && (
+            <div className="border-b bg-warning/10 px-4 py-2 text-xs text-warning">
+              Agente pausado: {activeConversation.handoffReason}
+            </div>
+          )}
+
           {/* Messages */}
           <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto bg-muted/30 p-4 scrollbar-thin">
             {patientMessages.map((msg) => {
               const isPatient = msg.sender === 'patient';
               const isSystem = msg.sender === 'system';
+              const isAi = msg.sender === 'ai';
+              // Disparo automático de protocolo: fica centralizado, não é fala
+              // de ninguém da equipe.
               if (isSystem) {
                 return (
                   <div key={msg.id} className="flex justify-center">
@@ -242,15 +340,25 @@ export default function MessagesPage() {
                       'max-w-[75%] rounded-2xl px-4 py-2.5',
                       isPatient
                         ? 'rounded-bl-sm bg-card border'
-                        : 'rounded-br-sm bg-primary text-primary-foreground'
+                        : isAi
+                          // A IA fala pela clínica, mas quem leu precisa saber
+                          // que não foi uma pessoa que escreveu.
+                          ? 'rounded-br-sm border border-primary/30 bg-primary/10 text-foreground'
+                          : 'rounded-br-sm bg-primary text-primary-foreground'
                     )}
                   >
+                    {isAi && (
+                      <div className="mb-1 flex items-center gap-1 text-[11px] font-medium text-primary">
+                        <Bot className="h-3 w-3" style={{ width: 12, height: 12 }} />
+                        Agente
+                      </div>
+                    )}
                     <MessageAttachment msg={msg} isPatient={isPatient} />
                     {msg.text && <p className="text-sm leading-relaxed">{msg.text}</p>}
                     <div
                       className={cn(
                         'mt-1 flex items-center justify-end gap-1 text-xs',
-                        isPatient ? 'text-muted-foreground' : 'text-primary-foreground/60'
+                        isPatient || isAi ? 'text-muted-foreground' : 'text-primary-foreground/60'
                       )}
                     >
                       {msg.time}

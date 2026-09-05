@@ -38,7 +38,6 @@ export default function NewPatientPage() {
     e.preventDefault();
     setError(null);
     const fd = new FormData(e.currentTarget);
-    const protocol = protocols.find((p) => p.id === protocolId);
     const doctor = doctors.find((d) => d.id === doctorId);
     setSubmitting(true);
     try {
@@ -49,10 +48,8 @@ export default function NewPatientPage() {
         phone: String(fd.get('phone') || fd.get('whatsapp') || ''),
         email: String(fd.get('email') || ''),
         notes: String(fd.get('notes') || ''),
-        protocolId: protocolId || undefined,
-        surgeryType: protocol?.name,
+        // Um procedimento por clínica: o protocolo é resolvido no createPatient.
         surgeryDate: String(fd.get('surgeryDate') || ''),
-        hospital: String(fd.get('hospital') || ''),
         surgeon: doctor?.name,
         doctorId: doctorId || undefined,
       });
@@ -135,35 +132,21 @@ export default function NewPatientPage() {
           </CardContent>
         </Card>
 
-        {/* Surgery Data */}
+        {/* Procedimento — um único tipo (transplante capilar), então nada de
+            catálogo. A data pode ficar em branco: leads que chegam pelo
+            WhatsApp ainda não têm procedimento marcado. */}
         <Card>
           <CardHeader className="pb-4">
-            <CardTitle className="text-base font-semibold">Dados cirúrgicos</CardTitle>
+            <CardTitle className="text-base font-semibold">Procedimento</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <div className="space-y-2">
-                <Label htmlFor="surgeryType">Tipo de cirurgia *</Label>
-                <Select value={protocolId} onValueChange={setProtocolId}>
-                  <SelectTrigger id="surgeryType">
-                    <SelectValue placeholder="Selecione o protocolo" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {protocols.map((p) => (
-                      <SelectItem key={p.id} value={p.id}>
-                        {p.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="surgeryDate">Data da cirurgia *</Label>
-                <Input id="surgeryDate" name="surgeryDate" type="date" required />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="hospital">Hospital</Label>
-                <Input id="hospital" name="hospital" placeholder="Nome do hospital ou clínica" />
+                <Label htmlFor="surgeryDate">Data do procedimento</Label>
+                <Input id="surgeryDate" name="surgeryDate" type="date" />
+                <p className="text-xs text-muted-foreground">
+                  Define o início dos disparos automáticos. Pode ser preenchida depois.
+                </p>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="doctor">Médico responsável</Label>

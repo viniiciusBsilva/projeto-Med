@@ -9,14 +9,15 @@ interface AppShellProps {
   userName?: string;
   userEmail?: string;
   roleLabel?: string;
+  isSuperadmin?: boolean;
 }
 
-export function AppShell({ children, userName, userEmail, roleLabel }: AppShellProps) {
+export function AppShell({ children, userName, userEmail, roleLabel, isSuperadmin }: AppShellProps) {
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
 
   return (
     <div className="min-h-screen bg-background">
-      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} isSuperadmin={isSuperadmin} />
       <div className="lg:pl-72">
         <Topbar
           onMenuClick={() => setSidebarOpen(true)}
