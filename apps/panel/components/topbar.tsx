@@ -1,6 +1,7 @@
 'use client';
 
 import * as React from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useTheme } from 'next-themes';
 import { Moon, Sun, Menu, Search, Bell } from 'lucide-react';
@@ -113,8 +114,10 @@ export function Topbar({ onMenuClick, userName, userEmail, roleLabel }: TopbarPr
               </DropdownMenuItem>
             ))}
             <DropdownMenuSeparator />
-            <DropdownMenuItem className="justify-center text-sm font-medium text-primary">
-              Ver todas as notificações
+            {/* Era um item morto, sem link. Agora que Notificações saiu do menu
+                lateral, este é o único caminho para a página. */}
+            <DropdownMenuItem asChild className="justify-center text-sm font-medium text-primary">
+              <Link href="/notifications">Ver todas as notificações</Link>
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

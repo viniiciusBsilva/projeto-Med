@@ -9,7 +9,6 @@ import {
   UserRound,
   Calendar,
   MessageSquare,
-  Bell,
   FileBarChart,
   Settings,
   Activity,
@@ -38,7 +37,8 @@ const navItems = [
   { href: '/messages', label: 'Mensagens', icon: MessageSquare },
   { href: '/mensagens-programadas', label: 'Mensagens programadas', icon: CalendarClock },
   { href: '/calendar', label: 'Agenda', icon: Calendar },
-  { href: '/notifications', label: 'Notificações', icon: Bell },
+  // Notificações saiu do menu: o acesso é pelo sino do topo, que já lista as
+  // recentes. O que exige ação da equipe está em Alertas.
   { href: '/reports', label: 'Relatórios', icon: FileBarChart },
   { href: '/doctors', label: 'Médicos', icon: UserRound, adminOnly: true },
   { href: '/clinics', label: 'Clínicas', icon: Building2, adminOnly: true },
