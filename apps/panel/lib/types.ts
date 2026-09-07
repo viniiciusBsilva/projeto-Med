@@ -57,6 +57,9 @@ export interface ProtocolStep {
   active: boolean;
   /** true quando `body` ainda é o `[TEXTO A DEFINIR PELO MÉDICO]`. */
   pending: boolean;
+  /** Disparos já materializados. Apagar o passo remove estes em cascata. */
+  sentCount: number;
+  scheduledCount: number;
 }
 
 /** Situação dos disparos já materializados para os pacientes. */

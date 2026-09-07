@@ -868,6 +868,19 @@ export async function getProtocolSteps(): Promise<ProtocolStep[]> {
     .order('day_offset');
   if (error) throw error;
 
+  // Quantos disparos cada passo já tem. Uma query agregada em vez de uma por
+  // card — e é o número que avisa o usuário do que ele perde ao excluir.
+  const { data: dispatches } = await supabase
+    .from('protocol_messages')
+    .select('step_id, status');
+  const counts = new Map<string, { sent: number; scheduled: number }>();
+  ((dispatches ?? []) as any[]).forEach((d) => {
+    const c = counts.get(d.step_id) ?? { sent: 0, scheduled: 0 };
+    if (d.status === 'sent' || d.status === 'answered') c.sent += 1;
+    else if (d.status === 'scheduled' || d.status === 'sending') c.scheduled += 1;
+    counts.set(d.step_id, c);
+  });
+
   return (data ?? []).map((s: any) => ({
     id: s.id,
     dayOffset: Number(s.day_offset),
@@ -878,7 +891,83 @@ export async function getProtocolSteps(): Promise<ProtocolStep[]> {
     sendTime: String(s.send_time ?? '09:00').slice(0, 5),
     active: s.active !== false,
     pending: !s.instructions || String(s.instructions).trimStart().startsWith(PLACEHOLDER),
+    sentCount: counts.get(s.id)?.sent ?? 0,
+    scheduledCount: counts.get(s.id)?.scheduled ?? 0,
   }));
+}
+
+/** Fase sugerida a partir do dia — o médico pode trocar no formulário. */
+export function phaseForDay(dayOffset: number): 'preop' | 'postop' | 'followup' {
+  if (dayOffset < 0) return 'preop';
+  if (dayOffset <= 20) return 'postop';
+  return 'followup';
+}
+
+export async function createProtocolStep(input: {
+  dayOffset: number;
+  title: string;
+  body: string;
+  sendTime: string;
+  phase: 'preop' | 'postop' | 'followup';
+}): Promise<void> {
+  const supabase = createClient();
+  const clinicId = await currentClinicId(supabase);
+  if (!clinicId) throw new Error('Clínica do usuário não encontrada.');
+
+  // Clínica sem protocolo ainda (caso raro): cria o container antes do passo.
+  let { data: protocol } = await supabase
+    .from('protocols')
+    .select('id')
+    .eq('clinic_id', clinicId)
+    .order('created_at')
+    .limit(1)
+    .maybeSingle();
+
+  if (!protocol) {
+    const { data: created, error: pErr } = await supabase
+      .from('protocols')
+      .insert({
+        clinic_id: clinicId,
+        name: 'Transplante Capilar',
+        specialty: 'capilar',
+        duration_days: 365,
+      } as any)
+      .select('id')
+      .single();
+    if (pErr) throw new Error('Não foi possível criar o protocolo da clínica.');
+    protocol = created;
+  }
+
+  const { error } = await supabase.from('protocol_steps').insert({
+    protocol_id: (protocol as any).id,
+    day_offset: input.dayOffset,
+    title: input.title,
+    instructions: input.body,
+    send_time: input.sendTime,
+    phase: input.phase,
+    active: true,
+  } as any);
+
+  if (error) {
+    // `unique (protocol_id, day_offset)`: só existe uma mensagem por dia.
+    if ((error as any).code === '23505') {
+      throw new Error(
+        `Já existe uma mensagem para ${stepLabel(input.dayOffset)}. Edite a que existe ou escolha outro dia.`,
+      );
+    }
+    throw error;
+  }
+}
+
+/**
+ * Apaga um passo. `protocol_messages.step_id` tem `on delete cascade`, então os
+ * disparos daquele passo somem junto — inclusive o registro dos já ENVIADOS.
+ * Por isso a tela mostra o impacto antes de confirmar.
+ */
+export async function deleteProtocolStep(id: string): Promise<void> {
+  const supabase = createClient();
+  const { error } = await supabase.from('protocol_steps').delete().eq('id', id);
+  if (error) throw error;
 }
 
 export async function updateProtocolStep(
