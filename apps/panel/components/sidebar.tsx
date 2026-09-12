@@ -9,7 +9,6 @@ import {
   UserRound,
   Calendar,
   MessageSquare,
-  FileBarChart,
   Settings,
   Activity,
   CalendarClock,
@@ -39,7 +38,7 @@ const navItems = [
   { href: '/calendar', label: 'Agenda', icon: Calendar },
   // Notificações saiu do menu: o acesso é pelo sino do topo, que já lista as
   // recentes. O que exige ação da equipe está em Alertas.
-  { href: '/reports', label: 'Relatórios', icon: FileBarChart },
+  // Relatórios oculto a pedido da clínica; a rota /reports continua existindo.
   { href: '/doctors', label: 'Médicos', icon: UserRound, adminOnly: true },
   { href: '/clinics', label: 'Clínicas', icon: Building2, adminOnly: true },
   { href: '/settings', label: 'Configurações', icon: Settings },

@@ -29,6 +29,8 @@ export async function deliver(
   body: string,
   sender: 'ai' | 'staff' | 'system',
   attachment?: OutgoingAttachment,
+  /** Segundos de "digitando…" antes do texto (só texto; mídia ignora). */
+  opts: { typingSeconds?: number } = {},
 ): Promise<string | null> {
   let waId: string | null;
 
@@ -44,7 +46,7 @@ export async function deliver(
       fileName: attachment.name,
     });
   } else {
-    waId = await sendText(conv.wa_phone, body);
+    waId = await sendText(conv.wa_phone, body, { delayTyping: opts.typingSeconds });
   }
 
   await admin.from('messages').insert({

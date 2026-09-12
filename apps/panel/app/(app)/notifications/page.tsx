@@ -1,8 +1,11 @@
 'use client';
 
 import * as React from 'react';
+import Link from 'next/link';
 import {
   AlertTriangle,
+  CalendarClock,
+  CalendarX,
   Thermometer,
   Clock,
   Camera,
@@ -32,6 +35,10 @@ const typeConfig: Record<string, TypeStyle> = {
   photo: { icon: Camera, color: 'text-primary', bg: 'bg-primary/10' },
   protocol: { icon: CheckCircle2, color: 'text-success', bg: 'bg-success/10' },
   message: { icon: MessageSquare, color: 'text-secondary', bg: 'bg-secondary/10' },
+  // Avisos do agente do WhatsApp para a equipe (alertas, pedido de atendente, falhas).
+  whatsapp_alert: { icon: AlertTriangle, color: 'text-warning', bg: 'bg-warning/10' },
+  appointment: { icon: CalendarClock, color: 'text-primary', bg: 'bg-primary/10' },
+  appointment_cancelled: { icon: CalendarX, color: 'text-destructive', bg: 'bg-destructive/10' },
 };
 
 const defaultTypeStyle: TypeStyle = { icon: Bell, color: 'text-muted-foreground', bg: 'bg-muted' };
@@ -139,9 +146,11 @@ export default function NotificationsPage() {
                       <p className="mt-1 text-sm text-muted-foreground">{notification.description}</p>
                       <p className="mt-1.5 text-xs text-muted-foreground/70">{notification.time}</p>
                     </div>
-                    <Button variant="ghost" size="sm" className="shrink-0 text-xs">
-                      Ver paciente
-                    </Button>
+                    {notification.patientId && (
+                      <Button asChild variant="ghost" size="sm" className="shrink-0 text-xs">
+                        <Link href={`/patients/${notification.patientId}`}>Ver paciente</Link>
+                      </Button>
+                    )}
                   </div>
                 );
               })}

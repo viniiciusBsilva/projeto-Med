@@ -140,8 +140,10 @@ export function Topbar({ onMenuClick, userName, userEmail, roleLabel }: TopbarPr
               </div>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <DropdownMenuItem>Meu perfil</DropdownMenuItem>
-            <DropdownMenuItem>Configurações</DropdownMenuItem>
+            {/* "Meu perfil" e "Configurações" eram itens mortos; o perfil fica em Configurações. */}
+            <DropdownMenuItem asChild>
+              <Link href="/settings">Configurações</Link>
+            </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
               className="text-destructive"

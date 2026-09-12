@@ -20,6 +20,7 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
+import { TimeInput } from '@/components/ui/time-input';
 import { Textarea } from '@/components/ui/textarea';
 import {
   Dialog,
@@ -285,12 +286,11 @@ function StepCard({
             <Label htmlFor={`time-${step.id}`} className="text-xs text-muted-foreground">
               Horário
             </Label>
-            <Input
+            <TimeInput
               id={`time-${step.id}`}
-              type="time"
               value={sendTime}
-              onChange={(e) => setSendTime(e.target.value)}
-              className="h-8 w-28"
+              onChange={setSendTime}
+              className="h-8"
             />
           </div>
 
@@ -438,13 +438,7 @@ function NewStepDialog({
             </div>
             <div className="space-y-2">
               <Label htmlFor="new-time">Horário</Label>
-              <Input
-                id="new-time"
-                type="time"
-                value={sendTime}
-                onChange={(e) => setSendTime(e.target.value)}
-                required
-              />
+              <TimeInput id="new-time" value={sendTime} onChange={setSendTime} className="w-full justify-center" />
             </div>
           </div>
 

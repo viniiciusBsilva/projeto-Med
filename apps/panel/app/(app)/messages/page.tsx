@@ -30,6 +30,7 @@ import {
   sendMessage,
   uploadChatAttachment,
   signMessageRow,
+  markConversationRead,
 } from '@/lib/queries';
 import { createClient } from '@/lib/supabase/client';
 import { cn } from '@/lib/utils';
@@ -79,6 +80,8 @@ export default function MessagesPage() {
     getMessages(selectedPatient.id)
       .then((m) => {
         if (!cancelled) setMessages(m);
+        // Abrir a conversa é o que conta como "lida" para a equipe.
+        markConversationRead(selectedPatient.id).catch(() => {});
       })
       .catch(() => {
         if (!cancelled) setMessages([]);
@@ -101,6 +104,10 @@ export default function MessagesPage() {
           // memória cresce com o tráfego de todos os pacientes.
           if (payload.new.patient_id !== selectedPatientRef.current?.id) return;
           const msg = await signMessageRow(payload.new);
+          // Chegou com a conversa aberta na tela: já está sendo lida.
+          if (payload.new.sender === 'patient') {
+            markConversationRead(payload.new.patient_id).catch(() => {});
+          }
           setMessages((prev) =>
             prev.some((m) => m.id === msg.id) ? prev : [...prev, msg],
           );
@@ -109,11 +116,13 @@ export default function MessagesPage() {
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'messages' },
-        (payload) => {
+        async (payload) => {
           const row: any = payload.new;
-          setMessages((prev) =>
-            prev.map((m) => (m.id === row.id ? { ...m, read: row.read } : m)),
-          );
+          if (row.patient_id !== selectedPatientRef.current?.id) return;
+          // Arquivo do WhatsApp entra como "[Recebendo arquivo…]" e é atualizado
+          // com o anexo e a transcrição: a linha inteira é refeita, não só `read`.
+          const msg = await signMessageRow(row);
+          setMessages((prev) => prev.map((m) => (m.id === row.id ? msg : m)));
         },
       )
       .on(

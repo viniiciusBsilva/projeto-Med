@@ -31,7 +31,13 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { StatusBadge, RiskBadge, TimelineStatusBadge } from '@/components/status-badges';
 import type { Patient, Protocol, TimelineStep } from '@/lib/types';
-import { getPatient, getPatientTimeline, getProtocols, updateProcedureDate } from '@/lib/queries';
+import {
+  getPatient,
+  getPatientAiSummary,
+  getPatientTimeline,
+  getProtocols,
+  updateProcedureDate,
+} from '@/lib/queries';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 
@@ -41,17 +47,22 @@ export default function PatientDetailPage() {
   const [patient, setPatient] = React.useState<Patient | null>(null);
   const [timelineSteps, setTimelineSteps] = React.useState<TimelineStep[]>([]);
   const [protocol, setProtocol] = React.useState<Protocol | undefined>(undefined);
+  const [waSummary, setWaSummary] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(true);
 
   const reload = React.useCallback(
     () =>
-      Promise.all([getPatient(id), getPatientTimeline(id), getProtocols()]).then(
-        ([p, steps, protocols]) => {
-          setPatient(p);
-          setTimelineSteps(steps);
-          if (p) setProtocol(protocols.find((pr) => pr.id === p.protocolId));
-        },
-      ),
+      Promise.all([
+        getPatient(id),
+        getPatientTimeline(id),
+        getProtocols(),
+        getPatientAiSummary(id).catch(() => null),
+      ]).then(([p, steps, protocols, summary]) => {
+        setPatient(p);
+        setTimelineSteps(steps);
+        setWaSummary(summary);
+        if (p) setProtocol(protocols.find((pr) => pr.id === p.protocolId));
+      }),
     [id],
   );
 
@@ -166,6 +177,25 @@ export default function PatientDetailPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* O que o paciente contou à assistente no WhatsApp, resumido a cada resposta. */}
+      {waSummary && (
+        <Card className="border-primary/20">
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-base font-semibold">
+              <Sparkles className="h-4 w-4 text-primary" style={{ width: 16, height: 16 }} />
+              Quadro relatado no WhatsApp
+            </CardTitle>
+            <p className="text-xs text-muted-foreground">
+              Resumo feito pela assistente a partir das conversas. Não é avaliação clínica — confira
+              a conversa antes de decidir.
+            </p>
+          </CardHeader>
+          <CardContent>
+            <p className="whitespace-pre-line text-sm leading-relaxed">{waSummary}</p>
+          </CardContent>
+        </Card>
+      )}
 
       <Tabs defaultValue="timeline">
         <TabsList className="grid w-full grid-cols-3 md:w-auto">

@@ -13,8 +13,15 @@ function creds() {
   return { instance, token, clientToken };
 }
 
-/** Envia texto. Devolve o id da mensagem na Z-API para gravar em messages.wa_message_id. */
-export async function sendText(phoneE164: string, message: string): Promise<string | null> {
+/**
+ * Envia texto. Devolve o id da mensagem na Z-API para gravar em messages.wa_message_id.
+ * `delayTyping` (1–15 s): o paciente vê "digitando…" por esse tempo antes da mensagem.
+ */
+export async function sendText(
+  phoneE164: string,
+  message: string,
+  opts: { delayTyping?: number } = {},
+): Promise<string | null> {
   const { instance, token, clientToken } = creds();
   const res = await fetch(`${BASE}/instances/${instance}/token/${token}/send-text`, {
     method: 'POST',
@@ -23,7 +30,11 @@ export async function sendText(phoneE164: string, message: string): Promise<stri
       ...(clientToken ? { 'Client-Token': clientToken } : {}),
     },
     // A Z-API espera só dígitos, sem '+'.
-    body: JSON.stringify({ phone: phoneE164.replace(/\D/g, ''), message }),
+    body: JSON.stringify({
+      phone: phoneE164.replace(/\D/g, ''),
+      message,
+      ...(opts.delayTyping ? { delayTyping: Math.min(15, Math.max(1, Math.round(opts.delayTyping))) } : {}),
+    }),
   });
 
   if (!res.ok) {
@@ -75,13 +86,23 @@ export async function sendMedia(
   return body.messageId ?? body.zaapId ?? body.id ?? null;
 }
 
+/** Arquivo recebido. A URL fica 30 dias no storage da Z-API — media.ts copia para o nosso. */
+export type InboundMedia = {
+  kind: 'audio' | 'image' | 'video' | 'document';
+  url: string;
+  mimeType: string | null;
+  fileName: string | null;
+  caption: string | null;
+};
+
 export type InboundMessage = {
   instanceId: string | null;
   waMessageId: string | null;
   phoneE164: string | null;
   senderName: string | null;
   text: string | null;
-  /** Áudio/imagem/documento chegam sem texto — registramos e pedimos texto. */
+  /** Áudio, foto, vídeo ou documento. Figurinha não conta: kind 'media' com media null. */
+  media: InboundMedia | null;
   kind: 'text' | 'media' | 'other';
   fromMe: boolean;
   isGroup: boolean;
@@ -112,10 +133,39 @@ export function parseInbound(body: any): InboundMessage {
     phoneE164: toE164BR(body?.phone ?? body?.participantPhone ?? null),
     senderName: body?.senderName ?? body?.chatName ?? body?.pushName ?? null,
     text: text ? String(text).trim() : null,
+    media: parseMedia(body),
     kind: text ? 'text' : hasMedia ? 'media' : 'other',
     fromMe: Boolean(body?.fromMe),
     isGroup: Boolean(body?.isGroup),
     // Callbacks de status de entrega usam o mesmo webhook — não são mensagens.
     isStatusCallback: Boolean(body?.status) && !text && !hasMedia,
   };
+}
+
+// Formato dos exemplos da Z-API (on-message-received-examples).
+// deno-lint-ignore no-explicit-any
+function parseMedia(body: any): InboundMedia | null {
+  const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+  if (str(body?.audio?.audioUrl)) {
+    return { kind: 'audio', url: body.audio.audioUrl, mimeType: str(body.audio.mimeType), fileName: null, caption: null };
+  }
+  if (str(body?.image?.imageUrl)) {
+    return {
+      kind: 'image', url: body.image.imageUrl, mimeType: str(body.image.mimeType),
+      fileName: null, caption: str(body.image.caption),
+    };
+  }
+  if (str(body?.video?.videoUrl)) {
+    return {
+      kind: 'video', url: body.video.videoUrl, mimeType: str(body.video.mimeType),
+      fileName: null, caption: str(body.video.caption),
+    };
+  }
+  if (str(body?.document?.documentUrl)) {
+    return {
+      kind: 'document', url: body.document.documentUrl, mimeType: str(body.document.mimeType),
+      fileName: str(body.document.fileName) ?? str(body.document.title), caption: str(body.document.caption),
+    };
+  }
+  return null;
 }

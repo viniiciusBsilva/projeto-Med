@@ -11,7 +11,9 @@ import {
   Pencil,
   Trash2,
   Save,
+  Bot,
 } from 'lucide-react';
+import { AiSettingsTab } from '@/components/ai-settings-tab';
 import { PageHeader } from '@/components/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -54,8 +56,6 @@ import {
   setTeamMemberActive,
   getMyProfile,
   updateMyProfile,
-  getMyClinic,
-  updateMyClinic,
   sendMyPasswordReset,
   createUser,
   provisionClinic,
@@ -72,16 +72,6 @@ export default function SettingsPage() {
   const [pfPhone, setPfPhone] = React.useState('');
   const [savingProfile, setSavingProfile] = React.useState(false);
   const [profileMsg, setProfileMsg] = React.useState<string | null>(null);
-
-  // Dados da clínica (profissional)
-  const [clName, setClName] = React.useState('');
-  const [clCnpj, setClCnpj] = React.useState('');
-  const [clPhone, setClPhone] = React.useState('');
-  const [clEmail, setClEmail] = React.useState('');
-  const [clAddress, setClAddress] = React.useState('');
-  const [clInvite, setClInvite] = React.useState('');
-  const [savingClinic, setSavingClinic] = React.useState(false);
-  const [clinicMsg, setClinicMsg] = React.useState<string | null>(null);
 
   // Usuários (admin geral)
   const [team, setTeam] = React.useState<UserType[]>([]);
@@ -117,15 +107,6 @@ export default function SettingsPage() {
       setPfName(p.fullName);
       setPfPhone(p.phone);
     }).catch(() => {});
-    getMyClinic().then((c) => {
-      if (!c) return;
-      setClName(c.name);
-      setClCnpj(c.cnpj);
-      setClPhone(c.phone);
-      setClEmail(c.email);
-      setClAddress(c.address);
-      setClInvite(c.inviteCode);
-    }).catch(() => {});
     getCurrentProfile().then((p) => {
       if (!p) return;
       setMe({ id: p.id, isSuperadmin: p.isSuperadmin });
@@ -147,20 +128,6 @@ export default function SettingsPage() {
       setProfileMsg('Erro ao salvar o perfil.');
     } finally {
       setSavingProfile(false);
-    }
-  };
-
-  const handleSaveClinic = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setClinicMsg(null);
-    setSavingClinic(true);
-    try {
-      await updateMyClinic({ name: clName, cnpj: clCnpj, phone: clPhone, email: clEmail, address: clAddress });
-      setClinicMsg('Dados da clínica salvos.');
-    } catch {
-      setClinicMsg('Erro ao salvar a clínica.');
-    } finally {
-      setSavingClinic(false);
     }
   };
 
@@ -269,7 +236,7 @@ export default function SettingsPage() {
       <PageHeader title="Configurações" description="Gerencie seu perfil, usuários e preferências" />
 
       <Tabs defaultValue="profile">
-        <TabsList className={me?.isSuperadmin ? 'grid w-full grid-cols-3 md:w-auto' : 'inline-flex'}>
+        <TabsList className={me?.isSuperadmin ? 'grid w-full grid-cols-4 md:w-auto' : 'inline-flex'}>
           <TabsTrigger value="profile" className="gap-1.5">
             <User className="h-3.5 w-3.5" style={{ width: 14, height: 14 }} />
             <span className="hidden sm:inline">Meu perfil</span>
@@ -283,6 +250,13 @@ export default function SettingsPage() {
             <TabsTrigger value="users" className="gap-1.5">
               <Users className="h-3.5 w-3.5" style={{ width: 14, height: 14 }} />
               <span className="hidden sm:inline">Usuários</span>
+            </TabsTrigger>
+          )}
+          {/* Comportamento do agente do WhatsApp: só o admin geral configura. */}
+          {me?.isSuperadmin && (
+            <TabsTrigger value="ai" className="gap-1.5">
+              <Bot className="h-3.5 w-3.5" style={{ width: 14, height: 14 }} />
+              <span className="hidden sm:inline">Assistente de IA</span>
             </TabsTrigger>
           )}
         </TabsList>
@@ -325,53 +299,6 @@ export default function SettingsPage() {
             </CardContent>
           </Card>
 
-          {/* Dados da clínica — só profissional (admin geral gerencia em "Clínicas") */}
-          {me && !me.isSuperadmin && (
-            <Card>
-              <CardHeader className="pb-4">
-                <CardTitle className="text-base font-semibold">Dados da clínica</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <form onSubmit={handleSaveClinic} className="space-y-5">
-                  <div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
-                    <p className="text-xs font-medium text-muted-foreground">Código de convite da clínica</p>
-                    <p className="mt-1 select-all font-mono text-2xl font-bold tracking-widest text-primary">{clInvite || '—'}</p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Compartilhe com seus pacientes — eles informam este código no cadastro do app para entrar na sua clínica.
-                    </p>
-                  </div>
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                    <div className="space-y-2">
-                      <Label htmlFor="cl-name">Nome da clínica</Label>
-                      <Input id="cl-name" value={clName} onChange={(e) => setClName(e.target.value)} />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="cl-cnpj">CNPJ</Label>
-                      <Input id="cl-cnpj" value={clCnpj} onChange={(e) => setClCnpj(e.target.value)} />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="cl-phone">Telefone</Label>
-                      <Input id="cl-phone" value={clPhone} onChange={(e) => setClPhone(e.target.value)} />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="cl-email">E-mail</Label>
-                      <Input id="cl-email" type="email" value={clEmail} onChange={(e) => setClEmail(e.target.value)} />
-                    </div>
-                    <div className="space-y-2 md:col-span-2">
-                      <Label htmlFor="cl-address">Endereço</Label>
-                      <Input id="cl-address" value={clAddress} onChange={(e) => setClAddress(e.target.value)} />
-                    </div>
-                  </div>
-                  <div className="flex items-center justify-end gap-3">
-                    {clinicMsg && <span className="text-sm text-muted-foreground">{clinicMsg}</span>}
-                    <Button type="submit" disabled={savingClinic}>
-                      {savingClinic ? 'Salvando...' : 'Salvar alterações'}
-                    </Button>
-                  </div>
-                </form>
-              </CardContent>
-            </Card>
-          )}
         </TabsContent>
 
         {/* Usuários (admin geral) */}
@@ -540,6 +467,12 @@ export default function SettingsPage() {
         <TabsContent value="faq" className="mt-4">
           <FaqTab />
         </TabsContent>
+
+        {me?.isSuperadmin && (
+          <TabsContent value="ai" className="mt-4">
+            <AiSettingsTab />
+          </TabsContent>
+        )}
       </Tabs>
 
       {/* Modal de edição de nome */}

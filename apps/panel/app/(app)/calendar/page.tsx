@@ -1,7 +1,7 @@
 'use client';
 
 import * as React from 'react';
-import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Clock, User, Stethoscope, AlertTriangle, RotateCcw, Plus } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Clock, User, Stethoscope, AlertTriangle, RotateCcw, Plus, Settings2 } from 'lucide-react';
 import { PageHeader } from '@/components/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -23,8 +23,11 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import type { CalendarEvent, Patient, Doctor } from '@/lib/types';
-import { getCalendarEvents, getPatients, getDoctors, createAppointment } from '@/lib/queries';
+import { getCalendarEvents, getPatients, getDoctors, createAppointment, getAvailability } from '@/lib/queries';
 import { cn } from '@/lib/utils';
+import { describeDay, type ClinicAvailability } from '@/lib/availability';
+import { AvailabilityDialog } from '@/components/availability-dialog';
+import { TimeInput } from '@/components/ui/time-input';
 
 // Data local no formato YYYY-MM-DD (evita o off-by-one do toISOString(), que usa UTC).
 function toDateStr(d: Date) {
@@ -49,6 +52,9 @@ export default function CalendarPage() {
   const [currentDate, setCurrentDate] = React.useState(new Date());
   const [selectedDate, setSelectedDate] = React.useState<string | null>(todayIso);
   const [calendarEvents, setCalendarEvents] = React.useState<CalendarEvent[]>([]);
+  // Quando a clínica atende — é o que o agente do WhatsApp oferece aos pacientes.
+  const [availability, setAvailability] = React.useState<ClinicAvailability | null>(null);
+  const [availabilityOpen, setAvailabilityOpen] = React.useState(false);
 
   // Modal "Novo agendamento"
   const [open, setOpen] = React.useState(false);
@@ -74,6 +80,7 @@ export default function CalendarPage() {
     refreshEvents();
     getPatients().then(setPatients).catch(() => {});
     getDoctors(true).then(setDoctors).catch(() => {});
+    getAvailability().then(setAvailability).catch(() => {});
   }, [refreshEvents]);
 
   const handleCreateAppointment = async (e: React.FormEvent) => {
@@ -142,6 +149,10 @@ export default function CalendarPage() {
   return (
     <div className="space-y-6">
       <PageHeader title="Agenda" description="Retornos, consultas, cirurgias e alertas">
+        <Button size="sm" variant="outline" onClick={() => setAvailabilityOpen(true)} disabled={!availability}>
+          <Settings2 className="mr-1.5 h-4 w-4" />
+          Disponibilidade
+        </Button>
         <Dialog
           open={open}
           onOpenChange={(o) => {
@@ -215,7 +226,7 @@ export default function CalendarPage() {
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="ap-time">Hora</Label>
-                  <Input id="ap-time" type="time" value={apTime} onChange={(e) => setApTime(e.target.value)} required />
+                  <TimeInput id="ap-time" value={apTime} onChange={setApTime} className="w-full justify-center" />
                 </div>
               </div>
               <div className="space-y-2">
@@ -296,6 +307,15 @@ export default function CalendarPage() {
         </Dialog>
       </PageHeader>
 
+      {availability && (
+        <AvailabilityDialog
+          open={availabilityOpen}
+          onOpenChange={setAvailabilityOpen}
+          value={availability}
+          onSaved={setAvailability}
+        />
+      )}
+
       <div className="grid gap-6 lg:grid-cols-3">
         {/* Calendar */}
         <Card className="lg:col-span-2">
@@ -330,15 +350,19 @@ export default function CalendarPage() {
                 const events = getEventsForDate(dateStr);
                 const isSelected = selectedDate === dateStr;
                 const isToday = dateStr === todayIso;
+                const dayInfo = availability ? describeDay(availability, dateStr) : null;
                 return (
                   <button
                     key={i}
                     onClick={() => setSelectedDate(dateStr)}
+                    title={dayInfo?.text}
                     className={cn(
                       'relative flex min-h-[80px] flex-col items-center rounded-lg border p-2 transition-all hover:shadow-sm',
                       isSelected
                         ? 'border-primary bg-primary/5 ring-1 ring-primary/20'
-                        : 'border-transparent hover:border-border'
+                        : 'border-transparent hover:border-border',
+                      // Dia sem atendimento (fim de semana, feriado, folga): o agente não oferece.
+                      dayInfo && !dayInfo.open && !isSelected && 'bg-muted/50 text-muted-foreground'
                     )}
                   >
                     <span
@@ -378,6 +402,12 @@ export default function CalendarPage() {
                   <span className="text-xs text-muted-foreground">{config.label}</span>
                 </div>
               ))}
+              {availability && (
+                <div className="flex items-center gap-1.5">
+                  <span className="h-2.5 w-2.5 rounded-sm border bg-muted" />
+                  <span className="text-xs text-muted-foreground">Sem atendimento</span>
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -390,6 +420,12 @@ export default function CalendarPage() {
                 ? new Date(selectedDate + 'T00:00:00').toLocaleDateString('pt-BR', { day: 'numeric', month: 'long' })
                 : 'Selecione um dia'}
             </CardTitle>
+            {selectedDate && availability && (
+              <p className="flex items-center gap-1.5 pt-1 text-xs text-muted-foreground">
+                <Clock className="h-3.5 w-3.5" style={{ width: 14, height: 14 }} />
+                {describeDay(availability, selectedDate).text}
+              </p>
+            )}
           </CardHeader>
           <CardContent>
             {selectedEvents.length === 0 ? (

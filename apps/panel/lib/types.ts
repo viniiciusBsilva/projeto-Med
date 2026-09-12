@@ -26,6 +26,8 @@ export interface Patient {
   currentDay: number;
   protocolId: string;
   lastUpdate: string;
+  /** Etapa do funil ('lead', 'evaluation_scheduled'…) — é o que o agente do WhatsApp movimenta. */
+  funnelStatus: string;
   clinicId?: string;
   clinicName?: string;
 }
@@ -69,11 +71,19 @@ export interface DispatchSummary {
   failed: number;
 }
 
-/** Alerta aberto: a IA escalou e se pausou naquela conversa. */
+/**
+ * 'clinical' é sinal de saúde (triagem do check-in, raise_alert) e pesa no risco
+ * do paciente. Os demais são de atendimento: algo que a IA não resolveu sozinha.
+ * 'review' é arquivo do paciente (foto, vídeo, exame) para o médico avaliar.
+ */
+export type AlertKind = 'clinical' | 'question' | 'scheduling' | 'handoff' | 'technical' | 'review';
+
+/** Alerta aberto: sinal clínico ou atendimento que precisa da equipe. */
 export interface AlertItem {
   id: string;
   patientId: string;
   patientName: string;
+  kind: AlertKind;
   severity: 'medium' | 'high' | 'critical';
   reason: string;
   createdAt: string;
@@ -132,6 +142,7 @@ export interface Notification {
   title: string;
   description: string;
   patientName: string;
+  patientId?: string;
   time: string;
   severity: 'info' | 'warning' | 'critical';
   read: boolean;
@@ -184,9 +195,14 @@ export interface ClinicInfo {
 }
 
 export interface DashboardMetrics {
-  activePatients: number;
-  alertPatients: number;
-  finishedPatients: number;
+  /** Contatos do WhatsApp que ainda não agendaram (funil 'lead'). */
+  contacts: number;
+  /** Quem já confirmou agendamento ou tem procedimento (fora de 'lead' e 'cancelled'). */
+  patients: number;
+  clinicalAlerts: number;
+  /** Atendimento que a IA não resolveu (dúvida, agenda, pedido de atendente, falha). */
+  serviceAlerts: number;
   todayAppointments: number;
-  pendingMessages: number;
+  /** Conversas cuja última mensagem é do paciente e ainda não foi respondida. */
+  awaitingReply: number;
 }

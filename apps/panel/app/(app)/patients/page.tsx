@@ -8,7 +8,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { StatusBadge, RiskBadge } from '@/components/status-badges';
+import { StatusBadge, RiskBadge, FunnelBadge } from '@/components/status-badges';
 import type { Patient, PatientStatus } from '@/lib/types';
 import { getPatients, getCurrentProfile } from '@/lib/queries';
 import { cn } from '@/lib/utils';
@@ -26,6 +26,9 @@ export default function PatientsPage() {
   const [patients, setPatients] = React.useState<Patient[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [isSuperadmin, setIsSuperadmin] = React.useState(false);
+  // Todo "oi" no WhatsApp gera um registro; só vira paciente quem confirmou um
+  // agendamento (o trigger do banco tira do funil 'lead' nesse momento).
+  const [group, setGroup] = React.useState<'patients' | 'contacts'>('patients');
 
   React.useEffect(() => {
     getPatients()
@@ -34,7 +37,11 @@ export default function PatientsPage() {
     getCurrentProfile().then((p) => setIsSuperadmin(!!p?.isSuperadmin)).catch(() => {});
   }, []);
 
-  const filtered = patients.filter((p) => {
+  const isContact = (p: Patient) => p.funnelStatus === 'lead';
+  const contactsCount = patients.filter(isContact).length;
+  const inGroup = patients.filter((p) => (group === 'contacts') === isContact(p));
+
+  const filtered = inGroup.filter((p) => {
     const matchesSearch =
       p.name.toLowerCase().includes(search.toLowerCase()) ||
       p.surgeryType.toLowerCase().includes(search.toLowerCase());
@@ -44,7 +51,10 @@ export default function PatientsPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Pacientes" description="Gerencie todos os pacientes em acompanhamento">
+      <PageHeader
+        title="Pacientes"
+        description="Paciente é quem confirmou um agendamento. Contatos do WhatsApp ficam à parte até agendar."
+      >
         <Button asChild size="sm">
           <Link href="/patients/new">
             <Plus className="mr-1.5 h-4 w-4" />
@@ -53,13 +63,36 @@ export default function PatientsPage() {
         </Button>
       </PageHeader>
 
+      <div className="flex flex-wrap gap-2">
+        {[
+          { value: 'patients' as const, label: `Pacientes (${patients.length - contactsCount})` },
+          { value: 'contacts' as const, label: `Contatos do WhatsApp (${contactsCount})` },
+        ].map((g) => (
+          <button
+            key={g.value}
+            onClick={() => {
+              setGroup(g.value);
+              setActiveFilter('all');
+            }}
+            className={cn(
+              'rounded-lg px-4 py-2 text-sm font-medium transition-all',
+              group === g.value
+                ? 'bg-primary text-primary-foreground'
+                : 'border bg-card text-muted-foreground hover:bg-accent',
+            )}
+          >
+            {g.label}
+          </button>
+        ))}
+      </div>
+
       {/* Stats */}
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         {filters.map((f) => {
           const count =
             f.value === 'all'
-              ? patients.length
-              : patients.filter((p) => p.status === f.value).length;
+              ? inGroup.length
+              : inGroup.filter((p) => p.status === f.value).length;
           return (
             <button
               key={f.value}
@@ -123,10 +156,18 @@ export default function PatientsPage() {
                 <Users className="h-8 w-8 text-muted-foreground" style={{ width: 32, height: 32 }} />
               </div>
               <p className="mt-4 text-sm font-medium">
-                {patients.length === 0 ? 'Nenhum paciente ainda' : 'Nenhum paciente encontrado'}
+                {inGroup.length > 0
+                  ? 'Nenhum resultado'
+                  : group === 'contacts'
+                    ? 'Nenhum contato aguardando agendamento'
+                    : 'Nenhum paciente ainda'}
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
-                {patients.length === 0 ? 'Cadastre o primeiro paciente.' : 'Tente ajustar a busca ou os filtros'}
+                {inGroup.length > 0
+                  ? 'Tente ajustar a busca ou os filtros'
+                  : group === 'contacts'
+                    ? 'Quem escreve no WhatsApp aparece aqui até confirmar um agendamento.'
+                    : 'Contatos viram pacientes ao confirmar um agendamento.'}
               </p>
             </div>
           ) : (
@@ -147,7 +188,9 @@ export default function PatientsPage() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <p className="truncate font-medium">{patient.name}</p>
-                      <StatusBadge status={patient.status} />
+                      {/* "Ativo" dizia o mesmo de um lead e de um operado; o funil diferencia. */}
+                      <FunnelBadge stage={patient.funnelStatus} />
+                      {patient.status !== 'active' && <StatusBadge status={patient.status} />}
                       {isSuperadmin && patient.clinicName && (
                         <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
                           {patient.clinicName}
@@ -155,7 +198,14 @@ export default function PatientsPage() {
                       )}
                     </div>
                     <p className="mt-0.5 truncate text-sm text-muted-foreground">
-                      {patient.surgeryType} · {patient.doctor} · Dia {patient.currentDay}
+                      {[
+                        patient.surgeryDate
+                          ? `${patient.surgeryType} · Dia ${patient.currentDay}`
+                          : 'Sem procedimento marcado',
+                        patient.doctor,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
                     </p>
                   </div>
                   <div className="hidden md:block">

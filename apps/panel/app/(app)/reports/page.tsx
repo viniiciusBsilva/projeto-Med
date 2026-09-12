@@ -23,7 +23,7 @@ import { getProtocols, getWeeklyActivity, getReportStats, getFunnelDistribution 
 export default function ReportsPage() {
   const [recoveryTimeData, setRecoveryTimeData] = React.useState<{ name: string; tempo: number; pacientes: number }[]>([]);
   const [funnelData, setFunnelData] = React.useState<{ name: string; value: number; color: string }[]>([]);
-  const [weeklyChartData, setWeeklyChartData] = React.useState<{ day: string; pacientes: number; alertas: number; mensagens: number }[]>([]);
+  const [weeklyChartData, setWeeklyChartData] = React.useState<{ day: string; checkins: number; alertas: number; mensagens: number }[]>([]);
   const [summary, setSummary] = React.useState<{ totalPatients: number; avgRecoveryDays: number; alertsCount: number; protocolsCount: number } | null>(null);
 
   React.useEffect(() => {
@@ -78,7 +78,7 @@ export default function ReportsPage() {
             <CardTitle className="text-base font-semibold">Tempo médio de recuperação por cirurgia</CardTitle>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100" height={300}>
+            <ResponsiveContainer width="100%" height={300}>
               <BarChart data={recoveryTimeData} margin={{ top: 5, right: 10, left: -10, bottom: 5 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
                 <XAxis
@@ -117,7 +117,7 @@ export default function ReportsPage() {
             <CardTitle className="text-base font-semibold">Pacientes por etapa do funil</CardTitle>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100" height={300}>
+            <ResponsiveContainer width="100%" height={300}>
               <PieChart>
                 <Pie
                   data={funnelData}
@@ -154,10 +154,10 @@ export default function ReportsPage() {
       {/* Weekly Activity */}
       <Card>
         <CardHeader className="pb-4">
-          <CardTitle className="text-base font-semibold">Atividade semanal — pacientes vs. alertas</CardTitle>
+          <CardTitle className="text-base font-semibold">Atividade semanal — check-ins vs. alertas</CardTitle>
         </CardHeader>
         <CardContent>
-          <ResponsiveContainer width="100" height={280}>
+          <ResponsiveContainer width="100%" height={280}>
             <BarChart data={weeklyChartData} margin={{ top: 5, right: 10, left: -10, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
               <XAxis
@@ -182,7 +182,7 @@ export default function ReportsPage() {
                 }}
               />
               <Legend iconType="circle" wrapperStyle={{ fontSize: '12px' }} />
-              <Bar dataKey="pacientes" fill="hsl(var(--primary))" radius={[6, 6, 0, 0]} name="Pacientes" />
+              <Bar dataKey="checkins" fill="hsl(var(--primary))" radius={[6, 6, 0, 0]} name="Check-ins" />
               <Bar dataKey="alertas" fill="hsl(var(--destructive))" radius={[6, 6, 0, 0]} name="Alertas" />
             </BarChart>
           </ResponsiveContainer>

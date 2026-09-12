@@ -1,5 +1,17 @@
 import { cn } from '@/lib/utils';
 import type { PatientStatus, RiskLevel, TimelineStepStatus } from '@/lib/types';
+import { FUNNEL_LABELS } from '@/lib/queries';
+
+/** Etapa do funil. Texto neutro e ponto colorido: as cores do funil são claras demais para texto. */
+export function FunnelBadge({ stage }: { stage: string }) {
+  const f = FUNNEL_LABELS[stage] ?? { label: stage, color: '#94a3b8' };
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">
+      <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: f.color }} />
+      {f.label}
+    </span>
+  );
+}
 
 export function StatusBadge({ status }: { status: PatientStatus }) {
   const config: Record<PatientStatus, { label: string; className: string; dot: string }> = {

@@ -1,6 +1,8 @@
 // Camada de dados do painel. Usa o client Supabase do browser (a sessão vem do cookie,
 // então a RLS aplica o isolamento por clínica). Mapeia linhas do banco para lib/types.ts.
 import { createClient } from '@/lib/supabase/client';
+import { normalizeAvailability, type ClinicAvailability } from '@/lib/availability';
+import { normalizeAiSettings, type AiSettings } from '@/lib/ai-settings';
 import type {
   Patient,
   Protocol,
@@ -94,6 +96,7 @@ function overviewToPatient(r: any): Patient {
     currentDay: r.current_day != null ? Number(r.current_day) : 0,
     protocolId: r.protocol_id ?? '',
     lastUpdate: relativeTime(r.last_activity),
+    funnelStatus: r.funnel_status ?? 'lead',
     clinicId: r.clinic_id ?? '',
   };
 }
@@ -278,8 +281,21 @@ export async function getDashboardMetrics(): Promise<DashboardMetrics> {
 
   const countOf = (q: any) => q.then((r: any) => r.count ?? 0);
 
-  const [overview, todayAppointments, pendingMessages] = await Promise.all([
-    supabase.from('patient_overview').select('patient_status, open_alerts'),
+  const openAlerts = (clinical: boolean) => {
+    const q = supabase.from('alerts').select('id', { count: 'exact', head: true }).eq('status', 'open');
+    return countOf(clinical ? q.eq('kind', 'clinical') : q.neq('kind', 'clinical'));
+  };
+
+  // Todo "oi" no WhatsApp cria um registro em patients (a conversa precisa dele),
+  // mas paciente mesmo é quem confirmou agendamento — o trigger
+  // trg_appt_promote_funnel tira o registro de 'lead' nesse momento.
+  const [contacts, patients, clinicalAlerts, serviceAlerts, todayAppointments, conversations] = await Promise.all([
+    countOf(supabase.from('patients').select('id', { count: 'exact', head: true }).eq('funnel_status', 'lead')),
+    countOf(
+      supabase.from('patients').select('id', { count: 'exact', head: true }).not('funnel_status', 'in', '(lead,cancelled)'),
+    ),
+    openAlerts(true),
+    openAlerts(false),
     countOf(
       supabase
         .from('appointments')
@@ -287,23 +303,24 @@ export async function getDashboardMetrics(): Promise<DashboardMetrics> {
         .gte('scheduled_at', dayStart.toISOString())
         .lt('scheduled_at', dayEnd.toISOString()),
     ),
-    countOf(
-      supabase
-        .from('messages')
-        .select('id', { count: 'exact', head: true })
-        .eq('sender', 'patient')
-        .eq('read', false),
-    ),
+    // PostgREST não compara duas colunas; são poucas conversas abertas por clínica.
+    supabase
+      .from('conversations')
+      .select('last_inbound_at, last_outbound_at')
+      .not('last_inbound_at', 'is', null)
+      .limit(1000),
   ]);
 
-  const rows = (overview.data ?? []) as any[];
-
   return {
-    activePatients: rows.filter((r) => r.patient_status === 'active').length,
-    alertPatients: rows.filter((r) => Number(r.open_alerts ?? 0) > 0).length,
-    finishedPatients: rows.filter((r) => r.patient_status === 'finished').length,
+    contacts,
+    patients,
+    clinicalAlerts,
+    serviceAlerts,
     todayAppointments,
-    pendingMessages,
+    // Antes: mensagens com read=false — nada marcava como lida, e o número só crescia.
+    awaitingReply: ((conversations.data ?? []) as any[]).filter(
+      (c) => !c.last_outbound_at || new Date(c.last_inbound_at) > new Date(c.last_outbound_at),
+    ).length,
   };
 }
 
@@ -312,7 +329,7 @@ export async function getDashboardMetrics(): Promise<DashboardMetrics> {
  * protocolo", que com um único procedimento é sempre 100%. Aqui é o que
  * realmente varia — e é o que o agente movimenta pelo WhatsApp.
  */
-const FUNNEL_LABELS: Record<string, { label: string; color: string }> = {
+export const FUNNEL_LABELS: Record<string, { label: string; color: string }> = {
   lead: { label: 'Lead', color: '#94a3b8' },
   evaluation_scheduled: { label: 'Avaliação agendada', color: '#38bdf8' },
   quote_sent: { label: 'Orçamento enviado', color: '#818cf8' },
@@ -354,7 +371,7 @@ export async function getOpenAlertsCount(): Promise<number> {
 }
 
 // Atividade semanal (últimos 7 dias): check-ins, alertas e mensagens por dia
-export async function getWeeklyActivity(): Promise<{ day: string; pacientes: number; alertas: number; mensagens: number }[]> {
+export async function getWeeklyActivity(): Promise<{ day: string; checkins: number; alertas: number; mensagens: number }[]> {
   const supabase = createClient();
   const since = new Date();
   since.setDate(since.getDate() - 6);
@@ -367,16 +384,17 @@ export async function getWeeklyActivity(): Promise<{ day: string; pacientes: num
   ]);
 
   const labels = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
-  const days: { day: string; pacientes: number; alertas: number; mensagens: number }[] = [];
+  const days: { day: string; checkins: number; alertas: number; mensagens: number }[] = [];
   for (let i = 6; i >= 0; i--) {
     const d = new Date();
     d.setDate(d.getDate() - i);
-    const key = d.toISOString().slice(0, 10);
+    // Dia local, como em dateOf: fatiar o ISO (UTC) jogava o fim da noite no dia seguinte.
+    const key = dateOf(d.toISOString());
     const count = (rows: any[] | null | undefined) =>
-      (rows ?? []).filter((r) => String(r.created_at).slice(0, 10) === key).length;
+      (rows ?? []).filter((r) => dateOf(r.created_at) === key).length;
     days.push({
       day: labels[d.getDay()],
-      pacientes: count(checkins.data),
+      checkins: count(checkins.data),
       alertas: count(alerts.data),
       mensagens: count(messages.data),
     });
@@ -408,6 +426,85 @@ function apptToEvent(a: any): CalendarEvent {
     doctor: a.professional ?? '',
     patientName: a.patients?.full_name ?? '',
   };
+}
+
+// ---------- assistente de IA (Configurações, só admin geral) ----------
+
+/** clinic_id do usuário logado — o admin geral também tem uma clínica "própria". */
+export async function getMyClinicId(): Promise<string | null> {
+  return currentClinicId(createClient());
+}
+
+export async function getClinicAiConfig(
+  clinicId: string,
+): Promise<{ settings: AiSettings; address: string; phone: string }> {
+  const supabase = createClient();
+  const { data, error } = await supabase
+    .from('clinics')
+    .select('address, phone, ai_settings')
+    .eq('id', clinicId)
+    .maybeSingle();
+  if (error) throw error;
+  const c = data as any;
+  return { settings: normalizeAiSettings(c?.ai_settings), address: c?.address ?? '', phone: c?.phone ?? '' };
+}
+
+/**
+ * Endereço e telefone vão junto: é o que o agente usa para dizer onde fica a
+ * clínica. Só o admin geral grava (RLS clinics_superadmin) — sem permissão, o
+ * update não dá erro, só não atinge linha nenhuma, por isso a checagem.
+ */
+export async function saveClinicAiConfig(
+  clinicId: string,
+  config: { settings: AiSettings; address: string; phone: string },
+): Promise<void> {
+  const supabase = createClient();
+  const { data, error } = await supabase
+    .from('clinics')
+    .update({
+      ai_settings: normalizeAiSettings(config.settings),
+      address: config.address || null,
+      phone: config.phone || null,
+    } as any)
+    .eq('id', clinicId)
+    .select('id');
+  if (error) throw new Error(error.message);
+  if (!data || data.length === 0) throw new Error('Sem permissão para alterar esta clínica.');
+}
+
+/**
+ * Quadro do paciente mantido pela assistente (conversations.ai_summary):
+ * resumo do que ele contou no WhatsApp, atualizado a cada resposta.
+ */
+export async function getPatientAiSummary(patientId: string): Promise<string | null> {
+  const supabase = createClient();
+  const { data } = await supabase
+    .from('conversations')
+    .select('ai_summary')
+    .eq('patient_id', patientId)
+    .not('ai_summary', 'is', null)
+    .limit(1)
+    .maybeSingle();
+  return (data as any)?.ai_summary ?? null;
+}
+
+// ---------- disponibilidade da agenda ----------
+// É o que o agente do WhatsApp usa para oferecer horários (clinics.business_hours).
+
+export async function getAvailability(): Promise<ClinicAvailability> {
+  const supabase = createClient();
+  const clinicId = await currentClinicId(supabase);
+  if (!clinicId) return normalizeAvailability(null);
+  const { data } = await supabase.from('clinics').select('business_hours').eq('id', clinicId).maybeSingle();
+  return normalizeAvailability((data as any)?.business_hours);
+}
+
+/** Grava pela RPC: a RLS de clinics só deixa o admin geral editar direto. */
+export async function saveAvailability(availability: ClinicAvailability): Promise<void> {
+  const supabase = createClient();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { error } = await (supabase.rpc as any)('update_my_availability', { p_availability: availability });
+  if (error) throw new Error(error.message);
 }
 
 export async function getCalendarEvents(): Promise<CalendarEvent[]> {
@@ -543,6 +640,18 @@ export async function getConversations(): Promise<Conversation[]> {
   }));
 }
 
+/** Marca como lidas as mensagens do paciente — alguém da equipe abriu a conversa. */
+export async function markConversationRead(patientId: string): Promise<void> {
+  const supabase = createClient();
+  const { error } = await supabase
+    .from('messages')
+    .update({ read: true } as any)
+    .eq('patient_id', patientId)
+    .eq('sender', 'patient')
+    .eq('read', false);
+  if (error) throw error;
+}
+
 /** Liga/desliga o agente numa conversa (CLAUDE.md §7.3 — a equipe precisa poder reativar). */
 export async function setConversationAiEnabled(
   conversationId: string,
@@ -562,6 +671,9 @@ export async function getNotifications(): Promise<Notification[]> {
   const { data, error } = await supabase
     .from('notifications')
     .select('*, patients(full_name)')
+    // Lembretes de checklist e "nova mensagem da clínica" são avisos para o app
+    // do paciente; no sino da equipe eram só ruído (30 lembretes num teste).
+    .not('type', 'in', '(care_reminder,message)')
     .order('created_at', { ascending: false })
     .limit(100);
   if (error) throw error;
@@ -571,6 +683,7 @@ export async function getNotifications(): Promise<Notification[]> {
     title: n.title,
     description: n.description ?? '',
     patientName: n.patients?.full_name ?? '',
+    patientId: n.patient_id ?? undefined,
     time: relativeTime(n.created_at),
     severity: n.severity,
     read: n.read,
@@ -1093,7 +1206,7 @@ export async function getOpenAlerts(): Promise<AlertItem[]> {
   const supabase = createClient();
   const { data, error } = await supabase
     .from('alerts')
-    .select('id, patient_id, severity, reason, created_at, checkin_id, patients(full_name)')
+    .select('id, patient_id, kind, severity, reason, created_at, checkin_id, patients(full_name)')
     .eq('status', 'open')
     .order('created_at', { ascending: false })
     .limit(100);
@@ -1117,6 +1230,7 @@ export async function getOpenAlerts(): Promise<AlertItem[]> {
       id: a.id,
       patientId: a.patient_id,
       patientName: a.patients?.full_name ?? 'Paciente',
+      kind: a.kind ?? 'clinical',
       severity: a.severity,
       reason: a.reason,
       createdAt: a.created_at,
@@ -1144,7 +1258,8 @@ export async function getReportStats(): Promise<{
 }> {
   const supabase = createClient();
   const [patients, alerts, protocols] = await Promise.all([
-    supabase.from('patients').select('id', { count: 'exact', head: true }),
+    // Contato que só mandou mensagem não é paciente.
+    supabase.from('patients').select('id', { count: 'exact', head: true }).not('funnel_status', 'in', '(lead,cancelled)'),
     supabase.from('alerts').select('id', { count: 'exact', head: true }),
     supabase.from('protocols').select('duration_days'),
   ]);

@@ -27,7 +27,7 @@ import { PageHeader } from '@/components/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { StatusBadge } from '@/components/status-badges';
+import { StatusBadge, FunnelBadge } from '@/components/status-badges';
 import type { Patient, CalendarEvent, DashboardMetrics } from '@/lib/types';
 import {
   getDashboardMetrics,
@@ -39,7 +39,7 @@ import { cn } from '@/lib/utils';
 
 export default function DashboardPage() {
   const [metrics, setMetrics] = React.useState<DashboardMetrics | null>(null);
-  const [weekly, setWeekly] = React.useState<{ day: string; pacientes: number; alertas: number; mensagens: number }[]>([]);
+  const [weekly, setWeekly] = React.useState<{ day: string; checkins: number; alertas: number; mensagens: number }[]>([]);
   const [upcomingEvents, setUpcomingEvents] = React.useState<CalendarEvent[]>([]);
   const [recentPatients, setRecentPatients] = React.useState<Patient[]>([]);
 
@@ -50,26 +50,31 @@ export default function DashboardPage() {
     getPatients().then((p) => setRecentPatients(p.slice(0, 5))).catch(() => {});
   }, []);
 
-  const kpis = [
-    { label: 'Pacientes Ativos', value: metrics?.activePatients ?? 0, icon: Users, color: 'text-primary', bg: 'bg-primary/10' },
-    { label: 'Pacientes em Alerta', value: metrics?.alertPatients ?? 0, icon: AlertTriangle, color: 'text-destructive', bg: 'bg-destructive/10' },
-    { label: 'Pacientes Finalizados', value: metrics?.finishedPatients ?? 0, icon: CheckCircle2, color: 'text-success', bg: 'bg-success/10' },
-    { label: 'Consultas de Hoje', value: metrics?.todayAppointments ?? 0, icon: CalendarClock, color: 'text-warning', bg: 'bg-warning/10' },
-    { label: 'Mensagens Pendentes', value: metrics?.pendingMessages ?? 0, icon: MessageSquare, color: 'text-secondary', bg: 'bg-secondary/10' },
+  const kpis: { label: string; value: number; hint?: string; icon: React.ElementType; color: string; bg: string }[] = [
+    { label: 'Contatos (leads)', value: metrics?.contacts ?? 0, icon: MessageSquare, color: 'text-primary', bg: 'bg-primary/10' },
+    { label: 'Pacientes', value: metrics?.patients ?? 0, icon: Users, color: 'text-success', bg: 'bg-success/10' },
+    {
+      label: 'Alertas abertos',
+      value: (metrics?.clinicalAlerts ?? 0) + (metrics?.serviceAlerts ?? 0),
+      hint: metrics ? `${metrics.clinicalAlerts} clínicos · ${metrics.serviceAlerts} de atendimento` : undefined,
+      icon: AlertTriangle,
+      color: 'text-destructive',
+      bg: 'bg-destructive/10',
+    },
+    { label: 'Consultas de hoje', value: metrics?.todayAppointments ?? 0, icon: CalendarClock, color: 'text-warning', bg: 'bg-warning/10' },
+    { label: 'Aguardando resposta', value: metrics?.awaitingReply ?? 0, icon: MessageSquare, color: 'text-secondary', bg: 'bg-secondary/10' },
   ];
 
-  const weeklySummary = metrics
-    ? `Nesta semana há ${metrics.activePatients} paciente(s) ativo(s) em acompanhamento, ` +
-      `${metrics.alertPatients} em alerta e ${metrics.finishedPatients} com protocolo concluído. ` +
-      `${metrics.pendingMessages} mensagem(ns) de paciente aguardam resposta.`
-    : 'Gerando resumo…';
+  // Retrato de agora, montado a partir das métricas — não é gerado por IA.
+  const summary = metrics
+    ? `${metrics.contacts} contato(s) ainda sem agendamento e ${metrics.patients} paciente(s). ` +
+      `${metrics.clinicalAlerts} alerta(s) clínico(s) e ${metrics.serviceAlerts} de atendimento em aberto. ` +
+      `${metrics.awaitingReply} conversa(s) aguardando resposta.`
+    : 'Carregando…';
 
   return (
     <div className="space-y-6">
       <PageHeader title="Dashboard" description="Visão geral do acompanhamento pós-operatório">
-        <Button variant="outline" size="sm">
-          Exportar relatório
-        </Button>
         <Button asChild size="sm">
           <Link href="/patients/new">
             <Plus className="mr-1.5 h-4 w-4" />
@@ -93,6 +98,7 @@ export default function DashboardPage() {
               </div>
               <p className="mt-4 text-3xl font-bold tracking-tight">{kpi.value}</p>
               <p className="mt-1 text-sm text-muted-foreground">{kpi.label}</p>
+              {kpi.hint && <p className="mt-0.5 text-xs text-muted-foreground/80">{kpi.hint}</p>}
             </CardContent>
           </Card>
         ))}
@@ -106,12 +112,12 @@ export default function DashboardPage() {
               <Activity className="h-5 w-5 text-primary" style={{ width: 20, height: 20 }} />
             </div>
             <div>
-              <p className="text-sm font-semibold">Resumo semanal da IA</p>
-              <p className="mt-1 text-sm text-muted-foreground">{weeklySummary}</p>
+              <p className="text-sm font-semibold">Resumo de agora</p>
+              <p className="mt-1 text-sm text-muted-foreground">{summary}</p>
             </div>
           </div>
-          <Button variant="outline" size="sm" className="shrink-0">
-            Ver análise completa
+          <Button asChild variant="outline" size="sm" className="shrink-0">
+            <Link href="/alertas">Ver alertas</Link>
           </Button>
         </div>
       </Card>
@@ -124,7 +130,7 @@ export default function DashboardPage() {
             <div className="flex items-center gap-4 text-xs">
               <span className="flex items-center gap-1.5">
                 <span className="h-2.5 w-2.5 rounded-full bg-primary" />
-                Pacientes
+                Check-ins
               </span>
               <span className="flex items-center gap-1.5">
                 <span className="h-2.5 w-2.5 rounded-full bg-destructive" />
@@ -137,7 +143,7 @@ export default function DashboardPage() {
             </div>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100" height={280}>
+            <ResponsiveContainer width="100%" height={280}>
               <AreaChart data={weekly} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
                 <defs>
                   <linearGradient id="colorPacientes" x1="0" y1="0" x2="0" y2="1">
@@ -177,7 +183,8 @@ export default function DashboardPage() {
                 />
                 <Area
                   type="monotone"
-                  dataKey="pacientes"
+                  dataKey="checkins"
+                  name="Check-ins"
                   stroke="hsl(var(--primary))"
                   strokeWidth={2}
                   fill="url(#colorPacientes)"
@@ -207,17 +214,21 @@ export default function DashboardPage() {
             <CardTitle className="text-base font-semibold">Próximos retornos</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
+            {upcomingEvents.length === 0 && (
+              <p className="py-6 text-center text-sm text-muted-foreground">Nenhum retorno agendado.</p>
+            )}
             {upcomingEvents.map((event) => (
               <div
                 key={event.id}
                 className="flex items-center gap-3 rounded-xl border p-3 transition-colors hover:bg-accent/50"
               >
                 <div className="flex h-10 w-10 shrink-0 flex-col items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  {/* 'YYYY-MM-DD' puro vira meia-noite UTC — no Brasil, o dia anterior. */}
                   <span className="text-xs font-semibold leading-none">
-                    {new Date(event.date).toLocaleDateString('pt-BR', { day: '2-digit' })}
+                    {new Date(`${event.date}T00:00:00`).toLocaleDateString('pt-BR', { day: '2-digit' })}
                   </span>
                   <span className="text-[10px] leading-none">
-                    {new Date(event.date).toLocaleDateString('pt-BR', { month: 'short' })}
+                    {new Date(`${event.date}T00:00:00`).toLocaleDateString('pt-BR', { month: 'short' })}
                   </span>
                 </div>
                 <div className="min-w-0 flex-1">
@@ -235,7 +246,7 @@ export default function DashboardPage() {
       {/* Recent Patients */}
       <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
-          <CardTitle className="text-base font-semibold">Últimos pacientes cadastrados</CardTitle>
+          <CardTitle className="text-base font-semibold">Atividade recente</CardTitle>
           <Button asChild variant="ghost" size="sm">
             <Link href="/patients">
               Ver todos
@@ -260,11 +271,17 @@ export default function DashboardPage() {
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{patient.name}</p>
                   <p className="truncate text-xs text-muted-foreground">
-                    {patient.surgeryType} · Dia {patient.currentDay}
+                    {patient.surgeryDate
+                      ? `${patient.surgeryType} · Dia ${patient.currentDay}`
+                      : 'Sem procedimento marcado'}
                   </p>
                 </div>
                 <div className="hidden sm:block">
-                  <StatusBadge status={patient.status} />
+                  {patient.status === 'alert' ? (
+                    <StatusBadge status={patient.status} />
+                  ) : (
+                    <FunnelBadge stage={patient.funnelStatus} />
+                  )}
                 </div>
                 <span className="hidden text-xs text-muted-foreground md:block">
                   {patient.lastUpdate}

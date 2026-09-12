@@ -3,25 +3,60 @@
 // Princípio da §1.2: a IA PROPÕE, o código EXECUTA e VALIDA. Nenhuma tool aceita
 // da IA um dado que o banco pode determinar sozinho — horário livre vem de
 // query, severidade clínica vem do trigger `checkin_triage`.
+//
+// O que a IA não resolve vira alerta por CÓDIGO (openServiceAlert), não pela boa
+// vontade do modelo: no teste de 11/09 ela prometeu "a equipe vai entrar em
+// contato" e ninguém foi avisado.
 
 import type { SupabaseClient } from 'jsr:@supabase/supabase-js@2';
 
 // ---------------------------------------------------------------------------
-// Regras de agenda — PLACEHOLDER
-// Horário de atendimento e regras da clínica estão pendentes com o médico
-// (§10). Quando chegarem, isto vira `clinics.config` em vez de constante.
+// Regras de agenda
 // ---------------------------------------------------------------------------
+// A disponibilidade vem de `clinics.business_hours`, configurada na Agenda do
+// painel (lib/availability.ts do painel — é o mesmo contrato):
+//   { "version": 2, "slot_minutes": 30,
+//     "weekly": { "1": [{ "start": "09:00", "end": "12:00" }, …], … },   // "0" = domingo
+//     "blocked_dates": [{ "date": "2026-12-25", "reason": "Natal" }] }
+// O formato antigo { days, start, end, slot_minutes } continua aceito.
+// Sem configuração: seg–sex, 9h–18h, 30 min.
 const TZ = 'America/Sao_Paulo';
-const BUSINESS_START_HOUR = 9;
-const BUSINESS_END_HOUR = 18;
-const SLOT_MINUTES = 30;
-const WORKDAYS = [1, 2, 3, 4, 5]; // seg-sex
+// Sem horário de verão desde 2019: o fuso de Brasília é fixo.
+const TZ_OFFSET = '-03:00';
+// O modelo oferece 2 ou 3 ao paciente; devolver dezenas só atrapalha.
+const MAX_SLOTS = 12;
+const SLOTS_PER_DAY = 3;
+// Período pedido sem vaga (fim de semana, dia lotado): procura adiante antes de desistir.
+const LOOKAHEAD_DAYS = 14;
+const WEEKDAYS_PT = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'];
+
+/** Intervalo de atendimento, em minutos desde 00:00. */
+type Interval = { start: number; end: number };
+
+type Availability = {
+  slotMinutes: number;
+  /** Índice = dia da semana (0 = domingo). */
+  weekly: Interval[][];
+  blocked: Set<string>;
+};
+
+const WORKDAY: Interval[] = [{ start: 9 * 60, end: 18 * 60 }];
+const DEFAULT_AVAILABILITY: Availability = {
+  slotMinutes: 30,
+  weekly: [[], WORKDAY, WORKDAY, WORKDAY, WORKDAY, WORKDAY, []],
+  blocked: new Set(),
+};
+
+/** Alerta de atendimento: o que a IA não resolveu. O clínico ('clinical') é o padrão da tabela. */
+export type ServiceAlertKind = 'question' | 'scheduling' | 'handoff' | 'technical' | 'review';
 
 export type ToolContext = {
   admin: SupabaseClient;
   clinicId: string;
   patientId: string;
   conversationId: string;
+  /** Vira true quando algo nesta rodada já avisou a equipe (alerta clínico ou de atendimento). */
+  flags: { alerted: boolean };
 };
 
 export type ToolResult = { ok: true; data: unknown } | { ok: false; error: string };
@@ -33,13 +68,13 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'get_patient',
     description:
-      'Busca os dados do paciente da conversa atual: nome, etapa do funil, data da cirurgia se houver e etapa do protocolo. Use antes de responder qualquer coisa que dependa do histórico dele.',
+      'Busca o dia relativo à cirurgia do paciente (negativo = dias até a cirurgia, positivo = dias de pós-operatório). Nome, etapa do funil e data da cirurgia já estão no contexto: só use esta tool se precisar do dia relativo.',
     input_schema: { type: 'object', properties: {}, required: [] },
   },
   {
     name: 'search_faq',
     description:
-      'Busca uma resposta APROVADA PELO MÉDICO no FAQ da clínica. Use SEMPRE que o paciente fizer uma pergunta sobre o procedimento, cuidados ou recuperação. Se não retornar nada, diga que vai encaminhar para a equipe — NUNCA responda com conhecimento próprio.',
+      'Busca uma resposta APROVADA PELO MÉDICO no FAQ da clínica. Use SEMPRE que o paciente fizer uma pergunta sobre o procedimento, cuidados, recuperação, valores ou funcionamento da clínica. Se não encontrar, a equipe é avisada automaticamente — NUNCA responda com conhecimento próprio.',
     input_schema: {
       type: 'object',
       properties: { question: { type: 'string', description: 'A dúvida do paciente, em poucas palavras.' } },
@@ -49,7 +84,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'list_available_slots',
     description:
-      'Lista horários realmente livres na agenda da clínica. É a ÚNICA fonte de horário — nunca invente ou suponha disponibilidade.',
+      'Lista horários realmente livres na agenda da clínica, em horário de Brasília. É a ÚNICA fonte de horário — nunca invente ou suponha disponibilidade. Busque sempre a partir de hoje (a data de hoje está no contexto). Ofereça ao paciente 2 ou 3 opções usando o campo "label".',
     input_schema: {
       type: 'object',
       properties: {
@@ -62,15 +97,46 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'book_appointment',
     description:
-      'Agenda uma consulta ou retorno em um horário obtido por list_available_slots. O código revalida se o horário continua livre e rejeita se tiver sido ocupado. Não agenda cirurgia — isso é da equipe.',
+      'Agenda uma avaliação (consultation) ou retorno (return) num horário devolvido por list_available_slots. O código revalida se o horário continua livre. Não agenda cirurgia — isso é da equipe.',
     input_schema: {
       type: 'object',
       properties: {
-        starts_at: { type: 'string', description: 'Início, ISO 8601 com fuso (ex.: 2026-09-10T14:00:00-03:00).' },
+        starts_at: { type: 'string', description: 'Use exatamente o "starts_at" do horário escolhido em list_available_slots.' },
         type: { type: 'string', enum: ['consultation', 'return'], description: 'Avaliação ou retorno.' },
         title: { type: 'string', description: 'Título curto do compromisso.' },
       },
       required: ['starts_at', 'type'],
+    },
+  },
+  {
+    name: 'list_my_appointments',
+    description:
+      'Lista os próximos agendamentos do paciente desta conversa. Use antes de remarcar ou cancelar, ou quando ele perguntar quando é a consulta dele.',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'reschedule_appointment',
+    description:
+      'Remarca uma avaliação ou retorno do paciente para um novo horário devolvido por list_available_slots.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        appointment_id: { type: 'string', description: 'O appointment_id devolvido por list_my_appointments.' },
+        new_starts_at: { type: 'string', description: 'O "starts_at" do novo horário, de list_available_slots.' },
+      },
+      required: ['appointment_id', 'new_starts_at'],
+    },
+  },
+  {
+    name: 'cancel_appointment',
+    description:
+      'Cancela uma avaliação ou retorno do paciente. Confirme com o paciente antes de chamar.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        appointment_id: { type: 'string', description: 'O appointment_id devolvido por list_my_appointments.' },
+      },
+      required: ['appointment_id'],
     },
   },
   {
@@ -123,7 +189,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'request_handoff',
     description:
-      'Passa a conversa para um atendente humano e pausa você. Use quando o paciente pedir para falar com alguém, ou quando você não puder resolver.',
+      'Passa a conversa para um atendente humano e pausa você. Use quando o paciente pedir para falar com alguém, reclamar do atendimento, ou quando você não puder resolver. Obrigatório antes de dizer que a equipe vai entrar em contato.',
     input_schema: {
       type: 'object',
       properties: { reason: { type: 'string', description: 'Motivo do encaminhamento.' } },
@@ -143,7 +209,7 @@ export const TOOL_DEFINITIONS = [
 ] as const;
 
 // ---------------------------------------------------------------------------
-// Implementações
+// Datas no fuso da clínica
 // ---------------------------------------------------------------------------
 
 function localParts(d: Date) {
@@ -162,6 +228,182 @@ function localParts(d: Date) {
     weekday: weekdayIdx,
   };
 }
+
+const pad2 = (n: number) => String(n).padStart(2, '0');
+
+/** "seg 14/09 09:00" — é o texto que o modelo repete ao paciente. */
+function slotLabel(d: Date): string {
+  const p = localParts(d);
+  const [, mm, dd] = p.date.split('-');
+  return `${WEEKDAYS_PT[p.weekday] ?? ''} ${dd}/${mm} ${pad2(p.hour)}:${pad2(p.minute)}`.trim();
+}
+
+/**
+ * ISO no fuso da clínica (2026-09-14T09:00:00-03:00). Devolver em UTC
+ * ("…T12:00:00Z") obrigava o modelo a converter — e ele oferecia hora errada.
+ */
+function localIso(d: Date): string {
+  const p = localParts(d);
+  return `${p.date}T${pad2(p.hour)}:${pad2(p.minute)}:00${TZ_OFFSET}`;
+}
+
+function typeLabel(type: string): string {
+  return type === 'return' ? 'retorno' : type === 'surgery' ? 'cirurgia' : 'avaliação';
+}
+
+function hhmmToMinutes(v: unknown): number | null {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(v ?? ''));
+  if (!m) return null;
+  const total = Number(m[1]) * 60 + Number(m[2]);
+  return total >= 0 && total <= 24 * 60 ? total : null;
+}
+
+async function loadAvailability(ctx: ToolContext): Promise<Availability> {
+  const { data } = await ctx.admin
+    .from('clinics').select('business_hours').eq('id', ctx.clinicId).maybeSingle();
+  // deno-lint-ignore no-explicit-any
+  const raw = data?.business_hours as any;
+  if (!raw || typeof raw !== 'object') return DEFAULT_AVAILABILITY;
+  const slotMinutes = Number(raw.slot_minutes) > 0 ? Number(raw.slot_minutes) : DEFAULT_AVAILABILITY.slotMinutes;
+
+  if (raw.weekly && typeof raw.weekly === 'object') {
+    const weekly: Interval[][] = [0, 1, 2, 3, 4, 5, 6].map((day) => {
+      const list: Array<{ start?: string; end?: string }> = Array.isArray(raw.weekly[String(day)])
+        ? raw.weekly[String(day)]
+        : [];
+      const out: Interval[] = [];
+      for (const iv of list) {
+        const start = hhmmToMinutes(iv?.start);
+        const end = hhmmToMinutes(iv?.end);
+        if (start !== null && end !== null && start < end) out.push({ start, end });
+      }
+      return out.sort((x, y) => x.start - y.start);
+    });
+    const blocked = new Set<string>();
+    for (const b of Array.isArray(raw.blocked_dates) ? raw.blocked_dates : []) {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(String(b?.date ?? ''))) blocked.add(String(b.date));
+    }
+    return { slotMinutes, weekly, blocked };
+  }
+
+  // Formato antigo: o mesmo horário (em horas cheias) para todos os dias listados.
+  if (Array.isArray(raw.days) && typeof raw.start === 'number' && typeof raw.end === 'number') {
+    const iv: Interval = { start: raw.start * 60, end: raw.end * 60 };
+    return {
+      slotMinutes,
+      weekly: [0, 1, 2, 3, 4, 5, 6].map((day) => (raw.days.includes(day) ? [iv] : [])),
+      blocked: new Set(),
+    };
+  }
+  return DEFAULT_AVAILABILITY;
+}
+
+/** O atendimento inteiro (início + duração) cabe num intervalo de um dia sem bloqueio. */
+function isBookable(d: Date, a: Availability): boolean {
+  const p = localParts(d);
+  if (a.blocked.has(p.date)) return false;
+  const m = p.hour * 60 + p.minute;
+  return (a.weekly[p.weekday] ?? []).some((iv) => m >= iv.start && m + a.slotMinutes <= iv.end);
+}
+
+function addDays(date: string, n: number): string {
+  const d = new Date(`${date}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Horários livres de fromDate a toDate (datas da clínica, inclusive): percorre
+ * cada intervalo de atendimento em passos da duração, sem passado, sem dia
+ * bloqueado e sem conflito com a agenda.
+ */
+async function findFreeSlots(ctx: ToolContext, a: Availability, fromDate: string, toDate: string): Promise<Date[]> {
+  const { data: booked } = await ctx.admin
+    .from('appointments')
+    .select('scheduled_at')
+    .eq('clinic_id', ctx.clinicId)
+    .gte('scheduled_at', new Date(`${fromDate}T00:00:00${TZ_OFFSET}`).toISOString())
+    .lte('scheduled_at', new Date(`${toDate}T23:59:59${TZ_OFFSET}`).toISOString());
+
+  const bookedAt = (booked ?? []).map((b) => new Date(b.scheduled_at).getTime());
+  // Mesma janela de conflito usada ao agendar, para o agente não oferecer um
+  // horário que a confirmação vai recusar em seguida.
+  const clashMs = (a.slotMinutes - 1) * 60000;
+  const now = Date.now();
+  const out: Date[] = [];
+  for (let date = fromDate; date <= toDate; date = addDays(date, 1)) {
+    if (a.blocked.has(date)) continue;
+    const weekday = new Date(`${date}T12:00:00Z`).getUTCDay();
+    for (const iv of a.weekly[weekday] ?? []) {
+      for (let m = iv.start; m + a.slotMinutes <= iv.end; m += a.slotMinutes) {
+        const d = new Date(`${date}T${pad2(Math.floor(m / 60))}:${pad2(m % 60)}:00${TZ_OFFSET}`);
+        const t = d.getTime();
+        if (t <= now) continue;
+        if (bookedAt.some((b) => Math.abs(b - t) <= clashMs)) continue;
+        out.push(d);
+      }
+    }
+  }
+  return out.sort((x, y) => x.getTime() - y.getTime());
+}
+
+/** Até SLOTS_PER_DAY por dia (começo, meio e fim do expediente), no máximo MAX_SLOTS. */
+function spreadSlots(slots: Date[]): Date[] {
+  const byDay = new Map<string, Date[]>();
+  for (const s of slots) {
+    const key = localParts(s).date;
+    if (!byDay.has(key)) byDay.set(key, []);
+    byDay.get(key)!.push(s);
+  }
+  const out: Date[] = [];
+  for (const day of byDay.values()) {
+    const picks = day.length <= SLOTS_PER_DAY
+      ? day
+      : [day[0], day[Math.floor(day.length / 2)], day[day.length - 1]];
+    for (const p of picks) {
+      if (out.length >= MAX_SLOTS) return out;
+      out.push(p);
+    }
+  }
+  return out;
+}
+
+async function hasClash(ctx: ToolContext, a: Availability, when: Date, ignoreId?: string): Promise<boolean> {
+  const windowMs = (a.slotMinutes - 1) * 60000;
+  let q = ctx.admin
+    .from('appointments')
+    .select('id')
+    .eq('clinic_id', ctx.clinicId)
+    .gte('scheduled_at', new Date(when.getTime() - windowMs).toISOString())
+    .lte('scheduled_at', new Date(when.getTime() + windowMs).toISOString())
+    .limit(1);
+  if (ignoreId) q = q.neq('id', ignoreId);
+  const { data } = await q;
+  return Boolean(data && data.length > 0);
+}
+
+/** O médico da agenda quando a clínica tem um só ativo. Com vários, a equipe escolhe. */
+async function soleActiveDoctor(ctx: ToolContext): Promise<{ id: string; full_name: string } | null> {
+  const { data } = await ctx.admin
+    .from('doctors').select('id, full_name').eq('clinic_id', ctx.clinicId).eq('active', true).limit(2);
+  return data && data.length === 1 ? data[0] : null;
+}
+
+/** Agendamento futuro do próprio paciente — a IA não mexe no de outra pessoa. */
+async function ownFutureAppointment(ctx: ToolContext, id: string) {
+  const { data } = await ctx.admin
+    .from('appointments')
+    .select('id, type, title, scheduled_at')
+    .eq('id', id)
+    .eq('patient_id', ctx.patientId)
+    .gte('scheduled_at', new Date().toISOString())
+    .maybeSingle();
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// Implementações
+// ---------------------------------------------------------------------------
 
 async function getPatient(ctx: ToolContext): Promise<ToolResult> {
   const { data: p } = await ctx.admin
@@ -223,7 +465,15 @@ async function searchFaq(ctx: ToolContext, question: string): Promise<ToolResult
   const { data } = await query;
 
   if (!data || data.length === 0) {
-    return { ok: true, data: { found: false, note: 'Sem resposta aprovada. Encaminhe para a equipe; não responda por conta própria.' } };
+    await openServiceAlert(ctx, 'question', `Dúvida sem resposta aprovada: "${question.trim().slice(0, 200)}"`);
+    return {
+      ok: true,
+      data: {
+        found: false,
+        note:
+          'Não há resposta aprovada. A equipe JÁ FOI AVISADA desta dúvida. Diga ao paciente, com naturalidade, que vai confirmar com a equipe e que eles respondem por aqui. Não responda por conta própria e continue ajudando no que puder.',
+      },
+    };
   }
   return { ok: true, data: { found: true, answers: data } };
 }
@@ -232,37 +482,48 @@ async function listAvailableSlots(ctx: ToolContext, fromDate: string, toDate: st
   if (!/^\d{4}-\d{2}-\d{2}$/.test(fromDate) || !/^\d{4}-\d{2}-\d{2}$/.test(toDate)) {
     return { ok: false, error: 'Datas devem estar em AAAA-MM-DD.' };
   }
-  const start = new Date(`${fromDate}T00:00:00-03:00`);
-  const end = new Date(`${toDate}T23:59:59-03:00`);
-  if (end < start) return { ok: false, error: 'to_date anterior a from_date.' };
+  const today = localParts(new Date()).date;
+  // Sem saber a data, o modelo chegou a buscar o passado e concluir "sem horários".
+  if (toDate < today) {
+    return { ok: false, error: `O período ${fromDate} a ${toDate} já passou. Hoje é ${today}: busque a partir de hoje.` };
+  }
+  const from = fromDate < today ? today : fromDate;
+  if (toDate < from) return { ok: false, error: 'to_date anterior a from_date.' };
   // Teto para não varrer meses inteiros.
-  const capped = new Date(Math.min(end.getTime(), start.getTime() + 21 * 86400000));
+  const to = toDate > addDays(from, 21) ? addDays(from, 21) : toDate;
 
-  const { data: booked } = await ctx.admin
-    .from('appointments')
-    .select('scheduled_at')
-    .eq('clinic_id', ctx.clinicId)
-    .gte('scheduled_at', start.toISOString())
-    .lte('scheduled_at', capped.toISOString());
+  const a = await loadAvailability(ctx);
+  let free = await findFreeSlots(ctx, a, from, to);
+  let note: string | undefined;
 
-  const bookedAt = (booked ?? []).map((a) => new Date(a.scheduled_at).getTime());
-  const now = Date.now();
-  const slots: string[] = [];
-  // Mesma janela de conflito usada por book_appointment, para o agente não
-  // oferecer um horário que a confirmação vai recusar em seguida.
-  const clashMs = (SLOT_MINUTES - 1) * 60000;
-
-  for (let t = start.getTime(); t <= capped.getTime() && slots.length < 40; t += SLOT_MINUTES * 60000) {
-    const d = new Date(t);
-    if (d.getTime() <= now) continue;
-    const { hour, weekday } = localParts(d);
-    if (!WORKDAYS.includes(weekday)) continue;
-    if (hour < BUSINESS_START_HOUR || hour >= BUSINESS_END_HOUR) continue;
-    if (bookedAt.some((b) => Math.abs(b - t) <= clashMs)) continue;
-    slots.push(d.toISOString());
+  if (free.length === 0) {
+    // Lista vazia fazia a IA desistir; procura os próximos antes.
+    free = await findFreeSlots(ctx, a, addDays(to, 1), addDays(to, LOOKAHEAD_DAYS));
+    if (free.length) note = 'Não há horário livre no período pedido. Estes são os próximos disponíveis.';
   }
 
-  return { ok: true, data: { slots, timezone: TZ, slot_minutes: SLOT_MINUTES } };
+  if (free.length === 0) {
+    await openServiceAlert(ctx, 'scheduling', `Agenda sem horário livre para o paciente a partir de ${from}.`);
+    return {
+      ok: true,
+      data: {
+        slots: [],
+        note:
+          'Agenda sem horário livre nas próximas semanas. A equipe JÁ FOI AVISADA e vai propor uma data; diga isso ao paciente com naturalidade.',
+      },
+    };
+  }
+
+  return {
+    ok: true,
+    data: {
+      today,
+      timezone: 'horário de Brasília',
+      slot_minutes: a.slotMinutes,
+      ...(note ? { note } : {}),
+      slots: spreadSlots(free).map((d) => ({ label: slotLabel(d), starts_at: localIso(d) })),
+    },
+  };
 }
 
 async function bookAppointment(
@@ -272,56 +533,141 @@ async function bookAppointment(
   title?: string,
 ): Promise<ToolResult> {
   if (type !== 'consultation' && type !== 'return') {
-    return { ok: false, error: 'Só consulta ou retorno. Cirurgia é agendada pela equipe.' };
+    return { ok: false, error: 'Só avaliação ou retorno. Cirurgia é agendada pela equipe.' };
   }
   const when = new Date(startsAt);
   if (Number.isNaN(when.getTime())) return { ok: false, error: 'starts_at inválido.' };
   if (when.getTime() <= Date.now()) return { ok: false, error: 'Horário no passado.' };
 
-  const { hour, weekday } = localParts(when);
-  if (!WORKDAYS.includes(weekday) || hour < BUSINESS_START_HOUR || hour >= BUSINESS_END_HOUR) {
-    return { ok: false, error: 'Fora do horário de atendimento.' };
+  const a = await loadAvailability(ctx);
+  if (!isBookable(when, a)) {
+    return { ok: false, error: 'Fora do horário de atendimento ou dia sem atendimento. Ofereça um horário de list_available_slots.' };
+  }
+
+  // Remarcar, não duplicar: o painel já tinha 6 agendamentos repetidos de teste.
+  const { data: existing } = await ctx.admin
+    .from('appointments')
+    .select('id, scheduled_at')
+    .eq('patient_id', ctx.patientId)
+    .eq('type', type)
+    .gte('scheduled_at', new Date().toISOString())
+    .order('scheduled_at')
+    .limit(1)
+    .maybeSingle();
+  if (existing) {
+    return {
+      ok: false,
+      error: `O paciente já tem ${typeLabel(type)} marcada para ${slotLabel(new Date(existing.scheduled_at))} (appointment_id ${existing.id}). Ofereça remarcar com reschedule_appointment em vez de marcar outra.`,
+    };
   }
 
   // Revalidação obrigatória (§1.2): o slot pode ter sido ocupado entre a
   // listagem e a confirmação.
-  const windowStart = new Date(when.getTime() - (SLOT_MINUTES - 1) * 60000).toISOString();
-  const windowEnd = new Date(when.getTime() + (SLOT_MINUTES - 1) * 60000).toISOString();
-  const { data: clash } = await ctx.admin
-    .from('appointments')
-    .select('id')
-    .eq('clinic_id', ctx.clinicId)
-    .gte('scheduled_at', windowStart)
-    .lte('scheduled_at', windowEnd)
-    .limit(1);
-
-  if (clash && clash.length > 0) {
+  if (await hasClash(ctx, a, when)) {
     return { ok: false, error: 'Horário ocupado. Ofereça outro de list_available_slots.' };
   }
 
-  const { data: patient } = await ctx.admin
-    .from('patients').select('full_name').eq('id', ctx.patientId).maybeSingle();
+  const [{ data: patient }, doctor] = await Promise.all([
+    ctx.admin.from('patients').select('full_name').eq('id', ctx.patientId).maybeSingle(),
+    soleActiveDoctor(ctx),
+  ]);
 
   const { data: created, error } = await ctx.admin
     .from('appointments')
     .insert({
       clinic_id: ctx.clinicId,
       patient_id: ctx.patientId,
-      title: title || (type === 'return' ? 'Retorno' : 'Avaliação') + ` — ${patient?.full_name ?? ''}`.trim(),
+      doctor_id: doctor?.id ?? null,
+      professional: doctor?.full_name ?? null,
+      title: title || `${type === 'return' ? 'Retorno' : 'Avaliação'} — ${patient?.full_name ?? ''}`.trim(),
       type,
       scheduled_at: when.toISOString(),
     })
     .select('id, scheduled_at')
     .single();
 
-  if (error) return { ok: false, error: 'Não foi possível agendar.' };
+  if (error) {
+    await openServiceAlert(ctx, 'scheduling', `Falha ao gravar ${typeLabel(type)} para ${slotLabel(when)}.`);
+    return { ok: false, error: 'Não foi possível agendar. A equipe já foi avisada e vai confirmar o horário.' };
+  }
 
-  await ctx.admin
-    .from('patients')
-    .update({ funnel_status: type === 'return' ? 'in_followup' : 'evaluation_scheduled' })
-    .eq('id', ctx.patientId);
+  // Contato → paciente: o funil avança no trigger trg_appt_promote_funnel, que
+  // vale também para agendamentos feitos pelo painel.
 
-  return { ok: true, data: { appointment_id: created.id, scheduled_at: created.scheduled_at } };
+  return {
+    ok: true,
+    data: { appointment_id: created.id, when: slotLabel(when), professional: doctor?.full_name ?? null },
+  };
+}
+
+async function listMyAppointments(ctx: ToolContext): Promise<ToolResult> {
+  const { data } = await ctx.admin
+    .from('appointments')
+    .select('id, type, title, scheduled_at, professional')
+    .eq('patient_id', ctx.patientId)
+    .gte('scheduled_at', new Date().toISOString())
+    .order('scheduled_at')
+    .limit(5);
+  return {
+    ok: true,
+    data: {
+      appointments: (data ?? []).map((a) => ({
+        appointment_id: a.id,
+        type: typeLabel(a.type),
+        when: slotLabel(new Date(a.scheduled_at)),
+        professional: a.professional ?? null,
+      })),
+    },
+  };
+}
+
+async function rescheduleAppointment(ctx: ToolContext, id: string, newStartsAt: string): Promise<ToolResult> {
+  const appt = await ownFutureAppointment(ctx, id);
+  if (!appt) return { ok: false, error: 'Agendamento não encontrado entre os próximos do paciente.' };
+  if (appt.type !== 'consultation' && appt.type !== 'return') {
+    return { ok: false, error: 'Só avaliação ou retorno podem ser remarcados por aqui. Cirurgia é com a equipe.' };
+  }
+  const when = new Date(newStartsAt);
+  if (Number.isNaN(when.getTime())) return { ok: false, error: 'new_starts_at inválido.' };
+  if (when.getTime() <= Date.now()) return { ok: false, error: 'Horário no passado.' };
+
+  const a = await loadAvailability(ctx);
+  if (!isBookable(when, a)) {
+    return { ok: false, error: 'Fora do horário de atendimento ou dia sem atendimento. Ofereça um horário de list_available_slots.' };
+  }
+  if (await hasClash(ctx, a, when, appt.id)) {
+    return { ok: false, error: 'Horário ocupado. Ofereça outro de list_available_slots.' };
+  }
+
+  const { error } = await ctx.admin
+    .from('appointments').update({ scheduled_at: when.toISOString() }).eq('id', appt.id);
+  if (error) {
+    await openServiceAlert(ctx, 'scheduling', `Falha ao remarcar ${typeLabel(appt.type)} para ${slotLabel(when)}.`);
+    return { ok: false, error: 'Não foi possível remarcar. A equipe já foi avisada.' };
+  }
+  return { ok: true, data: { appointment_id: appt.id, when: slotLabel(when) } };
+}
+
+async function cancelAppointment(ctx: ToolContext, id: string): Promise<ToolResult> {
+  const appt = await ownFutureAppointment(ctx, id);
+  if (!appt) return { ok: false, error: 'Agendamento não encontrado entre os próximos do paciente.' };
+  if (appt.type !== 'consultation' && appt.type !== 'return') {
+    return { ok: false, error: 'Só avaliação ou retorno podem ser cancelados por aqui. Cirurgia é com a equipe.' };
+  }
+
+  const { error } = await ctx.admin.from('appointments').delete().eq('id', appt.id);
+  if (error) {
+    await openServiceAlert(ctx, 'scheduling', `Paciente pediu para cancelar ${typeLabel(appt.type)} de ${slotLabel(new Date(appt.scheduled_at))} e a exclusão falhou.`);
+    return { ok: false, error: 'Não foi possível cancelar. A equipe já foi avisada.' };
+  }
+  // A vaga abriu e o paciente talvez precise de contato para remarcar.
+  await notifyStaff(
+    ctx,
+    'Agendamento cancelado pelo paciente',
+    `${typeLabel(appt.type)} de ${slotLabel(new Date(appt.scheduled_at))} cancelada pelo WhatsApp.`,
+    'warning',
+  );
+  return { ok: true, data: { cancelled: true, when: slotLabel(new Date(appt.scheduled_at)) } };
 }
 
 async function setFunnelStatus(ctx: ToolContext, status: string): Promise<ToolResult> {
@@ -381,6 +727,7 @@ async function recordCheckin(
     .maybeSingle();
 
   if (alert) {
+    ctx.flags.alerted = true;
     await pauseAi(ctx, `Alerta ${alert.severity} gerado por check-in`);
     await notifyStaff(ctx, 'Alerta de check-in', `Paciente relatou sintomas pelo WhatsApp (${alert.severity}).`,
       alert.severity === 'critical' ? 'critical' : 'warning');
@@ -399,11 +746,12 @@ async function recordCheckin(
 }
 
 /**
- * Escalação para humano. A IA NÃO escolhe severidade — julgar gravidade de
- * sintoma é ato clínico (§1.1). 'high' aqui é prioridade de fila, não
+ * Escalação clínica para humano. A IA NÃO escolhe severidade — julgar gravidade
+ * de sintoma é ato clínico (§1.1). 'high' aqui é prioridade de fila, não
  * classificação médica; a severidade clínica só vem do trigger de triagem.
  */
 async function raiseAlert(ctx: ToolContext, reason: string): Promise<ToolResult> {
+  ctx.flags.alerted = true;
   await ctx.admin.from('alerts').insert({
     clinic_id: ctx.clinicId,
     patient_id: ctx.patientId,
@@ -424,7 +772,7 @@ async function raiseAlert(ctx: ToolContext, reason: string): Promise<ToolResult>
 
 async function requestHandoff(ctx: ToolContext, reason: string): Promise<ToolResult> {
   await pauseAi(ctx, reason);
-  await notifyStaff(ctx, 'Atendimento humano solicitado', 'Um paciente pediu para falar com a equipe.', 'warning');
+  await openServiceAlert(ctx, 'handoff', `Paciente aguarda atendimento humano: ${reason.slice(0, 200)}`, 'high');
   return {
     ok: true,
     data: { handed_off: true, instruction: 'Confirme ao paciente que a equipe vai assumir a conversa. Nada além disso.' },
@@ -444,7 +792,67 @@ async function recordLgpdConsent(ctx: ToolContext, granted: boolean): Promise<To
   return { ok: true, data: { lgpd_consent: granted } };
 }
 
-// --- auxiliares ------------------------------------------------------------
+// --- alertas e avisos à equipe --------------------------------------------
+
+const SERVICE_ALERT_TITLE: Record<ServiceAlertKind, string> = {
+  question: 'Dúvida sem resposta',
+  scheduling: 'Problema no agendamento',
+  handoff: 'Paciente aguarda a equipe',
+  technical: 'Falha no assistente',
+  review: 'Arquivo do paciente para o médico',
+};
+
+/**
+ * Alerta de atendimento: algo que a IA não resolveu e alguém da equipe precisa
+ * ver. Um aberto por paciente e tipo — um segundo caso do mesmo tipo entra no
+ * mesmo alerta, em vez de encher a fila. Não é clínico: não pesa no risco do
+ * paciente (ver `patient_overview`).
+ */
+export async function openServiceAlert(
+  ctx: ToolContext,
+  kind: ServiceAlertKind,
+  reason: string,
+  severity: 'medium' | 'high' = 'medium',
+) {
+  ctx.flags.alerted = true;
+  const line = reason.slice(0, 300);
+
+  const { data: open } = await ctx.admin
+    .from('alerts')
+    .select('id, reason')
+    .eq('patient_id', ctx.patientId)
+    .eq('kind', kind)
+    .eq('status', 'open')
+    .maybeSingle();
+
+  if (open) {
+    if (!String(open.reason).includes(line)) {
+      await ctx.admin.from('alerts').update({ reason: `${open.reason}\n${line}`.slice(-1500) }).eq('id', open.id);
+    }
+    return;
+  }
+
+  const { error } = await ctx.admin.from('alerts').insert({
+    clinic_id: ctx.clinicId,
+    patient_id: ctx.patientId,
+    kind,
+    severity,
+    reason: line,
+  });
+  // 23505: outra execução abriu o mesmo alerta no meio do caminho — já está na fila.
+  if (error) {
+    if (error.code !== '23505') {
+      console.error(JSON.stringify({ event: 'service_alert_failed', kind, code: error.code ?? null }));
+    }
+    return;
+  }
+  await notifyStaff(
+    ctx,
+    SERVICE_ALERT_TITLE[kind],
+    'Abra a fila de Alertas para ver o que o paciente precisa.',
+    severity === 'high' ? 'critical' : 'warning',
+  );
+}
 
 async function pauseAi(ctx: ToolContext, reason: string) {
   await ctx.admin
@@ -453,6 +861,8 @@ async function pauseAi(ctx: ToolContext, reason: string) {
     .eq('id', ctx.conversationId);
 }
 
+// Tipo 'whatsapp_alert' é da equipe: o push e a leitura pelo app do paciente
+// ignoram esse tipo (migration de 11/09).
 async function notifyStaff(ctx: ToolContext, title: string, description: string, severity: string) {
   await ctx.admin.from('notifications').insert({
     clinic_id: ctx.clinicId,
@@ -471,16 +881,19 @@ async function notifyStaff(ctx: ToolContext, title: string, description: string,
 export async function runTool(name: string, input: any, ctx: ToolContext): Promise<ToolResult> {
   try {
     switch (name) {
-      case 'get_patient':           return await getPatient(ctx);
-      case 'search_faq':            return await searchFaq(ctx, String(input?.question ?? ''));
-      case 'list_available_slots':  return await listAvailableSlots(ctx, String(input?.from_date), String(input?.to_date));
-      case 'book_appointment':      return await bookAppointment(ctx, String(input?.starts_at), String(input?.type), input?.title);
-      case 'set_funnel_status':     return await setFunnelStatus(ctx, String(input?.status));
-      case 'record_checkin':        return await recordCheckin(ctx, input ?? {});
-      case 'raise_alert':           return await raiseAlert(ctx, String(input?.reason ?? 'sem detalhe'));
-      case 'request_handoff':       return await requestHandoff(ctx, String(input?.reason ?? 'sem detalhe'));
-      case 'record_lgpd_consent':   return await recordLgpdConsent(ctx, Boolean(input?.granted));
-      default:                      return { ok: false, error: `Tool desconhecida: ${name}` };
+      case 'get_patient':             return await getPatient(ctx);
+      case 'search_faq':              return await searchFaq(ctx, String(input?.question ?? ''));
+      case 'list_available_slots':    return await listAvailableSlots(ctx, String(input?.from_date), String(input?.to_date));
+      case 'book_appointment':        return await bookAppointment(ctx, String(input?.starts_at), String(input?.type), input?.title);
+      case 'list_my_appointments':    return await listMyAppointments(ctx);
+      case 'reschedule_appointment':  return await rescheduleAppointment(ctx, String(input?.appointment_id), String(input?.new_starts_at));
+      case 'cancel_appointment':      return await cancelAppointment(ctx, String(input?.appointment_id));
+      case 'set_funnel_status':       return await setFunnelStatus(ctx, String(input?.status));
+      case 'record_checkin':          return await recordCheckin(ctx, input ?? {});
+      case 'raise_alert':             return await raiseAlert(ctx, String(input?.reason ?? 'sem detalhe'));
+      case 'request_handoff':         return await requestHandoff(ctx, String(input?.reason ?? 'sem detalhe'));
+      case 'record_lgpd_consent':     return await recordLgpdConsent(ctx, Boolean(input?.granted));
+      default:                        return { ok: false, error: `Tool desconhecida: ${name}` };
     }
   } catch (e) {
     // Nunca vaza conteúdo do paciente no erro devolvido ao modelo.
